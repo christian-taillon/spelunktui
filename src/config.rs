@@ -5,19 +5,16 @@ use anyhow::{Result, Context};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
-    pub tc_access_id: String,
-    pub tc_secret_key: String,
-    pub tc_instance: String,
+    pub splunk_base_url: String,
+    pub splunk_token: String,
+    pub splunk_verify_ssl: bool,
 }
 
 impl Config {
     pub fn load() -> Result<Self> {
-        // Start with empty defaults
         let mut config = Config::default();
 
-        // 1. Try to load from XDG Config File (~/.config/tc-tui/config.toml)
-        // We use "tc-tui" as the application name.
-        if let Some(proj_dirs) = ProjectDirs::from("", "", "tc-tui") {
+        if let Some(proj_dirs) = ProjectDirs::from("", "", "splunk-tui") {
             let config_dir = proj_dirs.config_dir();
             let config_path = config_dir.join("config.toml");
             
@@ -25,7 +22,6 @@ impl Config {
                 let content = std::fs::read_to_string(&config_path)
                     .context(format!("Failed to read config file at {:?}", config_path))?;
                 
-                // Allow partial config in file
                 let file_config: FileConfig = toml::from_str(&content)
                     .context("Failed to parse config.toml")?;
                 
@@ -33,28 +29,23 @@ impl Config {
             }
         }
 
-        // 2. Load .env file (if present) - this populates env vars
-        // This allows local development overrides or directory-specific configs
         dotenv::dotenv().ok();
 
-        // 3. Load from Environment Variables (overrides file config)
-        if let Ok(val) = env::var("TC_ACCESS_ID") { config.tc_access_id = val; }
-        if let Ok(val) = env::var("TC_SECRET_KEY") { config.tc_secret_key = val; }
-        if let Ok(val) = env::var("TC_INSTANCE") { config.tc_instance = val; }
+        if let Ok(val) = env::var("SPLUNK_BASE_URL") { config.splunk_base_url = val; }
+        if let Ok(val) = env::var("SPLUNK_TOKEN") { config.splunk_token = val; }
+        if let Ok(val) = env::var("SPLUNK_VERIFY_SSL") {
+            config.splunk_verify_ssl = val.parse().unwrap_or(false);
+        }
 
         Ok(config)
     }
 
-    /// Returns a validation error if any required field is missing
     pub fn validate(&self) -> Result<()> {
-        if self.tc_access_id.is_empty() {
-            anyhow::bail!("TC_ACCESS_ID is missing. Please set it in config.toml or environment variables.");
+        if self.splunk_base_url.is_empty() {
+            anyhow::bail!("SPLUNK_BASE_URL is missing.");
         }
-        if self.tc_secret_key.is_empty() {
-            anyhow::bail!("TC_SECRET_KEY is missing. Please set it in config.toml or environment variables.");
-        }
-        if self.tc_instance.is_empty() {
-            anyhow::bail!("TC_INSTANCE is missing. Please set it in config.toml or environment variables.");
+        if self.splunk_token.is_empty() {
+            anyhow::bail!("SPLUNK_TOKEN is missing.");
         }
         Ok(())
     }
@@ -63,25 +54,24 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            tc_access_id: String::new(),
-            tc_secret_key: String::new(),
-            tc_instance: String::new(),
+            splunk_base_url: String::new(),
+            splunk_token: String::new(),
+            splunk_verify_ssl: false,
         }
     }
 }
 
-// Intermediate struct for partial file config
 #[derive(Deserialize)]
 struct FileConfig {
-    tc_access_id: Option<String>,
-    tc_secret_key: Option<String>,
-    tc_instance: Option<String>,
+    splunk_base_url: Option<String>,
+    splunk_token: Option<String>,
+    splunk_verify_ssl: Option<bool>,
 }
 
 impl Config {
     fn merge(&mut self, other: FileConfig) {
-        if let Some(v) = other.tc_access_id { self.tc_access_id = v; }
-        if let Some(v) = other.tc_secret_key { self.tc_secret_key = v; }
-        if let Some(v) = other.tc_instance { self.tc_instance = v; }
+        if let Some(v) = other.splunk_base_url { self.splunk_base_url = v; }
+        if let Some(v) = other.splunk_token { self.splunk_token = v; }
+        if let Some(v) = other.splunk_verify_ssl { self.splunk_verify_ssl = v; }
     }
 }

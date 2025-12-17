@@ -1,5 +1,5 @@
 [package]
-name = "tc-tui"
+name = "splunk-tui"
 version = "0.1.0"
 edition = "2021"
 
@@ -10,8 +10,6 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-hmac = "0.12"
-sha2 = "0.10"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1.0"

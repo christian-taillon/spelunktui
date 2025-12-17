@@ -1,7 +1,7 @@
 use reqwest::Client;
 use serde_json::Value;
 use std::error::Error;
-use log::error;
+use log::{error, info, debug};
 use crate::models::splunk::{SearchJob, JobStatus};
 
 #[derive(Clone)]
@@ -33,6 +33,7 @@ impl SplunkClient {
     }
 
     pub async fn create_search(&self, query: &str) -> Result<String, Box<dyn Error>> {
+        info!("Creating search for query: {}", query);
         let url = format!("{}/services/search/jobs", self.base_url);
         
         // Ensure query starts with "search " or similar if required, but usually Splunk adds it or implicit.
@@ -55,15 +56,26 @@ impl SplunkClient {
         let text = response.text().await?;
 
         if !status.is_success() {
+            if text.trim().starts_with("<!DOCTYPE") || text.trim().starts_with("<html") {
+                 error!("Received HTML response from Splunk API ({}). You might be connecting to the Splunk Web port (e.g. 8000/443) instead of the Management port (usually 8089). Response snippet: {:.200}", status, text);
+                 return Err(format!("API Error {}: Received HTML instead of JSON. Check SPLUNK_BASE_URL port (try :8089).", status).into());
+            }
             error!("Splunk API Error {}: {}", status, text);
             return Err(format!("API Error {}: {}", status, text).into());
         }
 
-        let job: SearchJob = serde_json::from_str(&text)?;
+        let job: SearchJob = serde_json::from_str(&text).map_err(|e| {
+            if text.trim().starts_with("<!DOCTYPE") || text.trim().starts_with("<html") {
+                 error!("Failed to parse JSON, received HTML. Check SPLUNK_BASE_URL port.");
+            }
+            e
+        })?;
+        info!("Search job created with SID: {}", job.sid);
         Ok(job.sid)
     }
 
     pub async fn get_job_status(&self, sid: &str) -> Result<JobStatus, Box<dyn Error>> {
+        debug!("Checking status for job {}", sid);
         let url = format!("{}/services/search/jobs/{}", self.base_url, sid);
         
         let response = self.client
@@ -77,7 +89,12 @@ impl SplunkClient {
         let text = response.text().await?;
 
         if !status.is_success() {
+             if text.trim().starts_with("<!DOCTYPE") || text.trim().starts_with("<html") {
+                 error!("Received HTML response from Splunk API ({}). Check SPLUNK_BASE_URL port (try :8089).", status);
+                 return Err(format!("API Error {}: Received HTML instead of JSON. Check port.", status).into());
+             }
              // Handle 404 specially?
+             error!("Failed to get job status for {}: {} - {}", sid, status, text);
              return Err(format!("API Error {}: {}", status, text).into());
         }
 
@@ -86,19 +103,27 @@ impl SplunkClient {
         // Let's assume standard Splunk REST structure:
         // { "entry": [ { "content": { ... } } ] }
 
-        let json: Value = serde_json::from_str(&text)?;
+        let json: Value = serde_json::from_str(&text).map_err(|e| {
+             if text.trim().starts_with("<!DOCTYPE") || text.trim().starts_with("<html") {
+                 error!("Failed to parse JSON, received HTML. Check SPLUNK_BASE_URL port.");
+             }
+             e
+        })?;
 
         if let Some(entry) = json.get("entry").and_then(|e| e.as_array()).and_then(|a| a.first()) {
             if let Some(content) = entry.get("content") {
                 let job_status: JobStatus = serde_json::from_value(content.clone())?;
+                debug!("Job {} status: done={}, dispatch_state={}, count={}", sid, job_status.is_done, job_status.dispatch_state, job_status.result_count);
                 return Ok(job_status);
             }
         }
 
+        error!("Failed to parse job status response for {}: {}", sid, text);
         Err(format!("Failed to parse job status response: {}", text).into())
     }
 
     pub async fn get_results(&self, sid: &str, count: u32, offset: u32) -> Result<Vec<Value>, Box<dyn Error>> {
+        info!("Fetching results for job {}, count={}, offset={}", sid, count, offset);
         let url = format!("{}/services/search/jobs/{}/results", self.base_url, sid);
 
         let response = self.client
@@ -116,17 +141,29 @@ impl SplunkClient {
         let text = response.text().await?;
 
         if !status.is_success() {
+            if text.trim().starts_with("<!DOCTYPE") || text.trim().starts_with("<html") {
+                 error!("Received HTML response from Splunk API ({}). Check SPLUNK_BASE_URL port (try :8089).", status);
+                 return Err(format!("API Error {}: Received HTML instead of JSON. Check port.", status).into());
+            }
+            error!("Failed to get results for {}: {} - {}", sid, status, text);
             return Err(format!("API Error {}: {}", status, text).into());
         }
 
-        let json: Value = serde_json::from_str(&text)?;
+        let json: Value = serde_json::from_str(&text).map_err(|e| {
+             if text.trim().starts_with("<!DOCTYPE") || text.trim().starts_with("<html") {
+                 error!("Failed to parse JSON, received HTML. Check SPLUNK_BASE_URL port.");
+             }
+             e
+        })?;
 
         // Results are usually in "results" array
         if let Some(results) = json.get("results").and_then(|r| r.as_array()) {
+            info!("Fetched {} results for job {}", results.len(), sid);
             return Ok(results.clone());
         }
 
         // If empty results or different structure
+        info!("No 'results' array found in response for job {}", sid);
         Ok(vec![])
     }
 

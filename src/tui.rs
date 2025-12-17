@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 use crate::api::SplunkClient;
 use crate::models::splunk::JobStatus;
 use serde_json::Value;
+use log::{info, error};
 
 #[derive(Clone, Copy)]
 pub enum ThemeVariant {
@@ -101,6 +102,7 @@ impl App {
             return;
         }
 
+        info!("Starting search for: {}", self.input);
         self.status_message = format!("Creating search job for '{}'...", self.input);
         self.current_job_sid = None;
         self.current_job_status = None;
@@ -110,10 +112,12 @@ impl App {
 
         match self.client.create_search(&self.input).await {
             Ok(sid) => {
+                info!("Job created successfully: {}", sid);
                 self.current_job_sid = Some(sid.clone());
                 self.status_message = format!("Job created (SID: {}). Waiting for results...", sid);
             }
             Err(e) => {
+                error!("Search creation failed: {}", e);
                 self.status_message = format!("Search failed: {}", e);
             }
         }
@@ -133,14 +137,17 @@ impl App {
 
                     if is_done && !self.results_fetched {
                          // Fetch results
+                         info!("Job {} is done. Fetching results...", sid);
                          self.status_message = String::from("Job done. Fetching results...");
                          match self.client.get_results(sid, 100, 0).await {
                              Ok(results) => {
+                                 info!("Received {} results for job {}", results.len(), sid);
                                  self.search_results = results;
                                  self.results_fetched = true;
                                  self.status_message = format!("Loaded {} results.", self.search_results.len());
                              }
                              Err(e) => {
+                                 error!("Failed to fetch results for job {}: {}", sid, e);
                                  // Even if failed, mark as fetched so we don't loop?
                                  // Or maybe retry? Let's stop to avoid infinite loop.
                                  self.results_fetched = true;
@@ -151,7 +158,8 @@ impl App {
                         self.status_message = format!("Job running... Dispatched: {}", self.current_job_status.as_ref().unwrap().dispatch_state);
                     }
                 }
-                Err(_) => {
+                Err(e) => {
+                     error!("Failed to check status for job {}: {}", sid, e);
                      // self.status_message = format!("Failed to check status: {}", e);
                 }
             }
@@ -189,6 +197,7 @@ impl App {
         };
     }
 }
+
 
 pub async fn run_app() -> Result<(), Box<dyn Error>> {
     let config = crate::config::Config::load()?;

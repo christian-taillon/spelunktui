@@ -261,15 +261,54 @@ impl App {
         }
     }
 
+    fn open_query_in_editor(&mut self) {
+        let mut temp_dir = std::env::temp_dir();
+        temp_dir.push("splunk_query.spl");
+        let file_path = temp_dir.to_str().unwrap().to_string();
+
+        if let Ok(mut file) = File::create(&file_path) {
+            if file.write_all(self.input.as_bytes()).is_ok() {
+                self.status_message = format!("Editing query in external editor...");
+                self.should_open_editor = true;
+            }
+        }
+    }
+
+    fn open_job_url(&mut self) {
+        if let Some(sid) = &self.current_job_sid {
+            let url = self.client.get_shareable_url(sid);
+            if url.starts_with("http") {
+                 let _ = open::that(url);
+                 self.status_message = String::from("Opened URL in browser.");
+            } else {
+                 self.status_message = String::from("Invalid URL.");
+            }
+        } else {
+            self.status_message = String::from("No active job URL.");
+        }
+    }
+
     fn scroll_down(&mut self) {
         if !self.search_results.is_empty() {
             self.scroll_offset = self.scroll_offset.saturating_add(1);
         }
     }
 
+    fn scroll_down_fast(&mut self) {
+        if !self.search_results.is_empty() {
+             self.scroll_offset = self.scroll_offset.saturating_add(10);
+        }
+    }
+
     fn scroll_up(&mut self) {
         if !self.search_results.is_empty() {
             self.scroll_offset = self.scroll_offset.saturating_sub(1);
+        }
+    }
+
+    fn scroll_up_fast(&mut self) {
+        if !self.search_results.is_empty() {
+            self.scroll_offset = self.scroll_offset.saturating_sub(10);
         }
     }
 
@@ -409,6 +448,17 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
         let mut app_guard = app.lock().await;
 
         if app_guard.should_open_editor {
+            // Determine file path based on mode BEFORE dropping lock
+            let mut temp_dir = std::env::temp_dir();
+            let filename = if let InputMode::Editing = app_guard.input_mode {
+                "splunk_query.spl"
+            } else {
+                "splunk_results.json"
+            };
+            temp_dir.push(filename);
+            let file_path = temp_dir.to_str().unwrap().to_string();
+            let is_editing_query = matches!(app_guard.input_mode, InputMode::Editing);
+
             app_guard.should_open_editor = false;
             drop(app_guard);
 
@@ -417,11 +467,7 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
             terminal.show_cursor()?;
 
             let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-            let mut temp_dir = std::env::temp_dir();
-            temp_dir.push("splunk_results.json");
-            let file_path = temp_dir.to_str().unwrap().to_string();
-
-            let _ = Command::new(editor).arg(file_path).status();
+            let _ = Command::new(editor).arg(&file_path).status();
 
             enable_raw_mode()?;
             execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
@@ -429,6 +475,14 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
             terminal.clear()?;
 
             app_guard = app.lock().await;
+
+            // If we were editing the query, reload it
+            if is_editing_query {
+                if let Ok(content) = std::fs::read_to_string(file_path) {
+                    app_guard.input = content;
+                    app_guard.status_message = String::from("Query updated from editor.");
+                }
+            }
         }
 
         terminal.draw(|f| ui(f, &mut app_guard))?;
@@ -462,8 +516,20 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                         KeyCode::Char('x') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                              app_guard.open_in_editor();
                         }
-                        KeyCode::Char('l') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        // Rebind Clear to ^R (Reset) to free ^L for Fast Scroll
+                        KeyCode::Char('r') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                              app_guard.clear_results();
+                        }
+                        // Fast Scroll
+                        KeyCode::Char('j') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                             app_guard.scroll_down_fast();
+                        }
+                        KeyCode::Char('l') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                             app_guard.scroll_up_fast();
+                        }
+                        // Open URL
+                        KeyCode::Char('E') if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) => {
+                             app_guard.open_job_url();
                         }
                         // Saved Searches
                         KeyCode::Char('s') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
@@ -504,6 +570,10 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                         // Ctrl + J for multiline
                         KeyCode::Char('j') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                             app_guard.input.push('\n');
+                        }
+                        // Ctrl + X to edit query in external editor
+                        KeyCode::Char('x') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            app_guard.open_query_in_editor();
                         }
                         // We also need to catch 'j' with control if it falls through to char.
                         // Wait, previous code block logic:

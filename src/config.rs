@@ -1,7 +1,10 @@
 use serde::Deserialize;
 use std::env;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use directories::ProjectDirs;
 use anyhow::{Result, Context};
+use log::{info, warn};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
@@ -19,6 +22,7 @@ impl Config {
             let config_path = config_dir.join("config.toml");
             
             if config_path.exists() {
+                info!("Loading config from: {:?}", config_path);
                 let content = std::fs::read_to_string(&config_path)
                     .context(format!("Failed to read config file at {:?}", config_path))?;
                 
@@ -29,12 +33,52 @@ impl Config {
             }
         }
 
-        dotenv::dotenv().ok();
-
+        // 2. Load from Environment Variables (System/Shell Config)
+        // Standard priority: Env vars first.
         if let Ok(val) = env::var("SPLUNK_BASE_URL") { config.splunk_base_url = val; }
         if let Ok(val) = env::var("SPLUNK_TOKEN") { config.splunk_token = val; }
         if let Ok(val) = env::var("SPLUNK_VERIFY_SSL") {
             config.splunk_verify_ssl = val.parse().unwrap_or(false);
+        }
+
+        // 3. Load from .env file (Project Config) - FORCE OVERRIDE
+        // We manually read .env to ensure it overrides stale environment variables
+        // which might be set in the shell (common issue).
+        
+        let dotenv_path = std::path::Path::new(".env");
+        if dotenv_path.exists() {
+             info!("Loading .env file from: {:?}", dotenv_path);
+             if let Ok(file) = File::open(dotenv_path) {
+                 let reader = BufReader::new(file);
+                 for line in reader.lines() {
+                     if let Ok(l) = line {
+                         let l = l.trim();
+                         if l.starts_with('#') || l.is_empty() { continue; }
+                         if let Some((key, val)) = l.split_once('=') {
+                             let key = key.trim();
+                             let val = val.trim().trim_matches('"').trim_matches('\''); // Simple unquote
+                             
+                             match key {
+                                 "SPLUNK_BASE_URL" => {
+                                     if config.splunk_base_url != val {
+                                         warn!("Overriding SPLUNK_BASE_URL from .env file: '{}' (was '{}')", val, config.splunk_base_url);
+                                         config.splunk_base_url = val.to_string();
+                                     }
+                                 },
+                                 "SPLUNK_TOKEN" => {
+                                     if !val.is_empty() {
+                                         config.splunk_token = val.to_string();
+                                     }
+                                 },
+                                 "SPLUNK_VERIFY_SSL" => {
+                                     config.splunk_verify_ssl = val.parse().unwrap_or(false);
+                                 },
+                                 _ => {}
+                             }
+                         }
+                     }
+                 }
+             }
         }
 
         Ok(config)
@@ -75,3 +119,4 @@ impl Config {
         if let Some(v) = other.splunk_verify_ssl { self.splunk_verify_ssl = v; }
     }
 }
+

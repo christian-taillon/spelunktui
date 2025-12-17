@@ -153,6 +153,7 @@ pub struct App {
     // Editor Logic
     editor_mode: EditorMode,
     cursor_position: usize, // Byte index into input string
+    editor_file_path: Option<String>,
 }
 
 impl App {
@@ -176,6 +177,7 @@ impl App {
             current_saved_search_name: None,
             editor_mode: EditorMode::Standard,
             cursor_position: 0,
+            editor_file_path: None,
         }
     }
 
@@ -278,6 +280,7 @@ impl App {
             let json_content = serde_json::to_string_pretty(&self.search_results).unwrap_or_default();
             if file.write_all(json_content.as_bytes()).is_ok() {
                 self.status_message = format!("Saved to {}. Opening...", file_path);
+                self.editor_file_path = Some(file_path);
                 self.should_open_editor = true;
             }
         }
@@ -291,6 +294,7 @@ impl App {
         if let Ok(mut file) = File::create(&file_path) {
             if file.write_all(self.input.as_bytes()).is_ok() {
                 self.status_message = format!("Editing query in external editor...");
+                self.editor_file_path = Some(file_path);
                 self.should_open_editor = true;
             }
         }
@@ -587,41 +591,37 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
         let mut app_guard = app.lock().await;
 
         if app_guard.should_open_editor {
-            // Determine file path based on mode BEFORE dropping lock
-            let mut temp_dir = std::env::temp_dir();
-            let filename = if let InputMode::Editing = app_guard.input_mode {
-                "splunk_query.spl"
-            } else {
-                "splunk_results.json"
-            };
-            temp_dir.push(filename);
-            let file_path = temp_dir.to_str().unwrap().to_string();
-            let is_editing_query = matches!(app_guard.input_mode, InputMode::Editing);
+            if let Some(file_path) = app_guard.editor_file_path.clone() {
+                let is_editing_query = file_path.ends_with("splunk_query.spl");
 
-            app_guard.should_open_editor = false;
-            drop(app_guard);
+                app_guard.should_open_editor = false;
+                app_guard.editor_file_path = None;
+                drop(app_guard);
 
-            disable_raw_mode()?;
-            execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
-            terminal.show_cursor()?;
+                disable_raw_mode()?;
+                execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+                terminal.show_cursor()?;
 
-            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-            let _ = Command::new(editor).arg(&file_path).status();
+                let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+                let _ = Command::new(editor).arg(&file_path).status();
 
-            enable_raw_mode()?;
-            execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
-            terminal.hide_cursor()?;
-            terminal.clear()?;
+                enable_raw_mode()?;
+                execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+                terminal.hide_cursor()?;
+                terminal.clear()?;
 
-            app_guard = app.lock().await;
+                app_guard = app.lock().await;
 
-            // If we were editing the query, reload it
-            if is_editing_query {
-                if let Ok(content) = std::fs::read_to_string(file_path) {
-                    app_guard.input = content;
-                    app_guard.cursor_position = app_guard.input.len(); // Reset cursor to end
-                    app_guard.status_message = String::from("Query updated from editor.");
+                // If we were editing the query, reload it
+                if is_editing_query {
+                    if let Ok(content) = std::fs::read_to_string(file_path) {
+                        app_guard.input = content;
+                        app_guard.cursor_position = app_guard.input.len(); // Reset cursor to end
+                        app_guard.status_message = String::from("Query updated from editor.");
+                    }
                 }
+            } else {
+                app_guard.should_open_editor = false; // Reset if path missing
             }
         }
 

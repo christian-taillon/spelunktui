@@ -5,7 +5,7 @@ pub struct SearchJob {
     pub sid: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JobStatus {
     #[serde(rename = "isDone")]
     pub is_done: bool,

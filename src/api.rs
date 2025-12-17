@@ -15,6 +15,7 @@ impl SplunkClient {
     pub fn new(base_url: String, token: String, verify_ssl: bool) -> Self {
         let client = Client::builder()
             .danger_accept_invalid_certs(!verify_ssl)
+            .timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("Failed to build HTTP client");
 
@@ -32,7 +33,7 @@ impl SplunkClient {
         }
     }
 
-    pub async fn create_search(&self, query: &str) -> Result<String, Box<dyn Error>> {
+    pub async fn create_search(&self, query: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
         let url = format!("{}/services/search/jobs", self.base_url);
         
         // Ensure query starts with "search " or similar if required, but usually Splunk adds it or implicit.
@@ -63,7 +64,7 @@ impl SplunkClient {
         Ok(job.sid)
     }
 
-    pub async fn get_job_status(&self, sid: &str) -> Result<JobStatus, Box<dyn Error>> {
+    pub async fn get_job_status(&self, sid: &str) -> Result<JobStatus, Box<dyn Error + Send + Sync>> {
         let url = format!("{}/services/search/jobs/{}", self.base_url, sid);
         
         let response = self.client
@@ -98,7 +99,7 @@ impl SplunkClient {
         Err(format!("Failed to parse job status response: {}", text).into())
     }
 
-    pub async fn get_results(&self, sid: &str, count: u32, offset: u32) -> Result<Vec<Value>, Box<dyn Error>> {
+    pub async fn get_results(&self, sid: &str, count: u32, offset: u32) -> Result<Vec<Value>, Box<dyn Error + Send + Sync>> {
         let url = format!("{}/services/search/jobs/{}/results", self.base_url, sid);
 
         let response = self.client
@@ -130,7 +131,7 @@ impl SplunkClient {
         Ok(vec![])
     }
 
-    pub async fn delete_job(&self, sid: &str) -> Result<(), Box<dyn Error>> {
+    pub async fn delete_job(&self, sid: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
         let url = format!("{}/services/search/jobs/{}", self.base_url, sid);
 
         let response = self.client

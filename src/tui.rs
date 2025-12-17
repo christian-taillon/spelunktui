@@ -142,6 +142,9 @@ pub struct App {
     results_fetched: bool,
     scroll_offset: u16,
 
+    // Status polling
+    is_status_fetching: bool,
+
     pub should_open_editor: bool,
 
     // Saved Search State
@@ -170,6 +173,7 @@ impl App {
             search_results: Vec::new(),
             results_fetched: false,
             scroll_offset: 0,
+            is_status_fetching: false,
             should_open_editor: false,
             save_search_name: String::new(),
             saved_searches: Vec::new(),
@@ -208,41 +212,7 @@ impl App {
     }
 
     pub async fn update_job_status(&mut self) {
-        if let Some(sid) = &self.current_job_sid {
-            if self.results_fetched {
-                return;
-            }
-
-            match self.client.get_job_status(sid).await {
-                Ok(status) => {
-                    let is_done = status.is_done;
-                    self.current_job_status = Some(status);
-
-                    if is_done && !self.results_fetched {
-                         info!("Job {} is done. Fetching results...", sid);
-                         self.status_message = String::from("Job done. Fetching results...");
-                         match self.client.get_results(sid, 100, 0).await {
-                             Ok(results) => {
-                                 info!("Received {} results for job {}", results.len(), sid);
-                                 self.search_results = results;
-                                 self.results_fetched = true;
-                                 self.status_message = format!("Loaded {} results.", self.search_results.len());
-                             }
-                             Err(e) => {
-                                 error!("Failed to fetch results for job {}: {}", sid, e);
-                                 self.results_fetched = true;
-                                 self.status_message = format!("Failed to fetch results: {}", e);
-                             }
-                         }
-                    } else if !is_done {
-                        self.status_message = format!("Job running... Dispatched: {}", self.current_job_status.as_ref().unwrap().dispatch_state);
-                    }
-                }
-                Err(e) => {
-                     error!("Failed to check status for job {}: {}", sid, e);
-                }
-            }
-        }
+        // Deprecated: Logic moved to background task in run_loop to avoid blocking UI
     }
 
     async fn kill_search(&mut self) {
@@ -645,7 +615,60 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
         terminal.draw(|f| ui(f, &mut app_guard))?;
 
         if last_tick.elapsed() >= tick_rate {
-            app_guard.update_job_status().await;
+            // Check if we need to spawn a status check
+            let needs_fetch = app_guard.current_job_sid.is_some()
+                && !app_guard.results_fetched
+                && !app_guard.is_status_fetching;
+
+            if needs_fetch {
+                app_guard.is_status_fetching = true;
+                app_guard.status_message = String::from("Checking status...");
+
+                let client = app_guard.client.clone();
+                let sid = app_guard.current_job_sid.as_ref().unwrap().clone();
+                let app_clone = app.clone();
+
+                tokio::spawn(async move {
+                    // 1. Check Status
+                    match client.get_job_status(&sid).await {
+                        Ok(status) => {
+                            let mut app = app_clone.lock().await;
+                            app.current_job_status = Some(status.clone());
+
+                            if status.is_done {
+                                // 2. If done, Fetch Results (still in background task)
+                                app.status_message = String::from("Job done. Fetching results...");
+                                drop(app); // Drop lock while fetching results
+
+                                match client.get_results(&sid, 100, 0).await {
+                                    Ok(results) => {
+                                        let mut app = app_clone.lock().await;
+                                        app.search_results = results;
+                                        app.results_fetched = true;
+                                        app.status_message = format!("Loaded {} results.", app.search_results.len());
+                                        app.is_status_fetching = false;
+                                    },
+                                    Err(e) => {
+                                        let mut app = app_clone.lock().await;
+                                        error!("Failed to fetch results for job {}: {}", sid, e);
+                                        app.status_message = format!("Failed to fetch results: {}", e);
+                                        app.is_status_fetching = false;
+                                    }
+                                }
+                            } else {
+                                // Not done
+                                app.status_message = format!("Job running... Dispatched: {}", status.dispatch_state);
+                                app.is_status_fetching = false;
+                            }
+                        },
+                        Err(e) => {
+                            let mut app = app_clone.lock().await;
+                            error!("Failed to check status for job {}: {}", sid, e);
+                            app.is_status_fetching = false;
+                        }
+                    }
+                });
+            }
             last_tick = std::time::Instant::now();
         }
 

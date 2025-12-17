@@ -157,6 +157,9 @@ pub struct App {
     editor_mode: EditorMode,
     cursor_position: usize, // Byte index into input string
     editor_file_path: Option<String>,
+
+    // Timing
+    job_created_at: Option<std::time::Instant>,
 }
 
 impl App {
@@ -182,6 +185,7 @@ impl App {
             editor_mode: EditorMode::Standard,
             cursor_position: 0,
             editor_file_path: None,
+            job_created_at: None,
         }
     }
 
@@ -197,12 +201,14 @@ impl App {
         self.search_results.clear();
         self.results_fetched = false;
         self.scroll_offset = 0;
+        self.job_created_at = None;
 
         match self.client.create_search(&self.input).await {
             Ok(sid) => {
                 info!("Job created successfully: {}", sid);
                 self.current_job_sid = Some(sid.clone());
-                self.status_message = format!("Job created (SID: {}). Waiting for results...", sid);
+                self.status_message = format!("Job created (SID: {}). Running...", sid);
+                self.job_created_at = Some(std::time::Instant::now());
             }
             Err(e) => {
                 error!("Search creation failed: {}", e);
@@ -622,7 +628,8 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
 
             if needs_fetch {
                 app_guard.is_status_fetching = true;
-                app_guard.status_message = String::from("Checking status...");
+                // Don't overwrite running message with "Checking status..."
+                // app_guard.status_message = String::from("Checking status...");
 
                 let client = app_guard.client.clone();
                 let sid = app_guard.current_job_sid.as_ref().unwrap().clone();
@@ -964,12 +971,21 @@ fn ui(f: &mut Frame, app: &mut App) {
         .scroll((input_scroll, 0));
     f.render_widget(input, header_chunks[0]);
 
-    // Job Stats & Results logic ... (same as before)
+    // Job Stats & Results logic
     let mut stats_text = vec![];
+
+    // Elapsed Time calculation
+    let elapsed_text = if let Some(start_time) = app.job_created_at {
+        let elapsed = start_time.elapsed().as_secs();
+        format!("(Elapsed: {}s) ", elapsed)
+    } else {
+        String::new()
+    };
+
     if let Some(status) = &app.current_job_status {
         stats_text.push(Line::from(vec![
             Span::styled("Status: ", Style::default().fg(app.theme.title_secondary)),
-            Span::styled(format!("{} ", if status.is_done { "Done" } else { "Running" }), Style::default().fg(app.theme.text)),
+            Span::styled(format!("{} {} ", if status.is_done { "Done" } else { "Running" }, elapsed_text), Style::default().fg(app.theme.text)),
             Span::styled(" | Count: ", Style::default().fg(app.theme.title_secondary)),
             Span::styled(format!("{} ", status.result_count), Style::default().fg(app.theme.text)),
             Span::styled(" | Time: ", Style::default().fg(app.theme.title_secondary)),
@@ -985,6 +1001,13 @@ fn ui(f: &mut Frame, app: &mut App) {
                 Span::styled(url, Style::default().fg(app.theme.summary_highlight)),
             ]));
         }
+    } else if let Some(sid) = &app.current_job_sid {
+        // Job created but status not yet fetched
+        stats_text.push(Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(app.theme.title_secondary)),
+            Span::styled(format!("Running {} ", elapsed_text), Style::default().fg(app.theme.text)),
+            Span::styled(format!("(SID: {})", sid), Style::default().fg(app.theme.title_secondary)),
+        ]));
     } else {
         stats_text.push(Line::from("No active job."));
     }

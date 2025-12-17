@@ -13,7 +13,7 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::{error::Error, io, sync::Arc};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::fs::File;
 use std::io::Write;
 use tokio::sync::Mutex;
@@ -603,7 +603,12 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                 terminal.show_cursor()?;
 
                 let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-                let _ = Command::new(editor).arg(&file_path).status();
+                let _ = Command::new(editor)
+                    .arg(&file_path)
+                    .stdin(Stdio::inherit())
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit())
+                    .status();
 
                 enable_raw_mode()?;
                 execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;

@@ -30,6 +30,7 @@ pub enum ThemeVariant {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct AppTheme {
     pub variant: ThemeVariant,
     pub border: Color,
@@ -134,6 +135,7 @@ pub struct App {
     save_search_name: String,
     saved_searches: Vec<String>,
     saved_search_list_state: ListState,
+    animation_frame: usize,
 }
 
 impl App {
@@ -154,12 +156,13 @@ impl App {
             save_search_name: String::new(),
             saved_searches: Vec::new(),
             saved_search_list_state: ListState::default(),
+            animation_frame: 0,
         }
     }
 
-    async fn perform_search(&mut self) {
+    pub fn prepare_search(&mut self) -> Option<(Arc<SplunkClient>, String)> {
         if self.input.trim().is_empty() {
-            return;
+            return None;
         }
 
         info!("Starting search for: {}", self.input);
@@ -170,17 +173,7 @@ impl App {
         self.results_fetched = false;
         self.scroll_offset = 0;
 
-        match self.client.create_search(&self.input).await {
-            Ok(sid) => {
-                info!("Job created successfully: {}", sid);
-                self.current_job_sid = Some(sid.clone());
-                self.status_message = format!("Job created (SID: {}). Waiting for results...", sid);
-            }
-            Err(e) => {
-                error!("Search creation failed: {}", e);
-                self.status_message = format!("Search failed: {}", e);
-            }
-        }
+        Some((self.client.clone(), self.input.clone()))
     }
 
     pub async fn update_job_status(&mut self) {
@@ -489,6 +482,7 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
 
         if last_tick.elapsed() >= tick_rate {
             app_guard.update_job_status().await;
+            app_guard.animation_frame = (app_guard.animation_frame + 1) % 4; // Cycle 0, 1, 2, 3
             last_tick = std::time::Instant::now();
         }
 
@@ -549,10 +543,27 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                              app_guard.kill_search().await;
                          }
                         KeyCode::Enter => {
-                            drop(app_guard);
-                            let mut app_guard_search = app.lock().await;
-                            app_guard_search.perform_search().await;
-                            app_guard_search.input_mode = InputMode::Normal;
+                            let search_params = app_guard.prepare_search();
+                            app_guard.input_mode = InputMode::Normal;
+                            if let Some((client, query)) = search_params {
+                                let app_clone = app.clone();
+                                tokio::spawn(async move {
+                                    let result = client.create_search(&query).await.map_err(|e| e.to_string());
+                                    match result {
+                                        Ok(sid) => {
+                                            let mut app = app_clone.lock().await;
+                                            info!("Job created successfully: {}", sid);
+                                            app.current_job_sid = Some(sid.clone());
+                                            app.status_message = format!("Job created (SID: {}). Waiting for results...", sid);
+                                        }
+                                        Err(msg) => {
+                                            let mut app = app_clone.lock().await;
+                                            error!("Search creation failed: {}", msg);
+                                            app.status_message = format!("Search failed: {}", msg);
+                                        }
+                                    }
+                                });
+                            }
                         }
                         _ => {}
                     },
@@ -562,10 +573,27 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                         // Prompt said "Multiline with Ctrl + j for line breaks".
                         // So Enter submits, Ctrl+J inserts newline.
                         KeyCode::Enter => {
-                            drop(app_guard);
-                            let mut app_guard_search = app.lock().await;
-                            app_guard_search.perform_search().await;
-                            app_guard_search.input_mode = InputMode::Normal;
+                            let search_params = app_guard.prepare_search();
+                            app_guard.input_mode = InputMode::Normal;
+                            if let Some((client, query)) = search_params {
+                                let app_clone = app.clone();
+                                tokio::spawn(async move {
+                                    let result = client.create_search(&query).await.map_err(|e| e.to_string());
+                                    match result {
+                                        Ok(sid) => {
+                                            let mut app = app_clone.lock().await;
+                                            info!("Job created successfully: {}", sid);
+                                            app.current_job_sid = Some(sid.clone());
+                                            app.status_message = format!("Job created (SID: {}). Waiting for results...", sid);
+                                        }
+                                        Err(msg) => {
+                                            let mut app = app_clone.lock().await;
+                                            error!("Search creation failed: {}", msg);
+                                            app.status_message = format!("Search failed: {}", msg);
+                                        }
+                                    }
+                                });
+                            }
                         }
                         // Ctrl + J for multiline
                         KeyCode::Char('j') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
@@ -747,26 +775,74 @@ fn ui(f: &mut Frame, app: &mut App) {
 
     // Job Stats
     let mut stats_text = vec![];
-    if let Some(status) = &app.current_job_status {
-        stats_text.push(Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(app.theme.title_secondary)),
-            Span::styled(format!("{} ", if status.is_done { "Done" } else { "Running" }), Style::default().fg(app.theme.text)),
-            Span::styled(" | Count: ", Style::default().fg(app.theme.title_secondary)),
-            Span::styled(format!("{} ", status.result_count), Style::default().fg(app.theme.text)),
-            Span::styled(" | Time: ", Style::default().fg(app.theme.title_secondary)),
-            Span::styled(format!("{:.2}s ", status.run_duration), Style::default().fg(app.theme.text)),
-            Span::styled(" | State: ", Style::default().fg(app.theme.title_secondary)),
-            Span::styled(format!("{}", status.dispatch_state), Style::default().fg(app.theme.text)),
-        ]));
+    let searching_animation = ["   ", ".  ", ".. ", "..."];
 
-        if let Some(sid) = &app.current_job_sid {
-            let url = app.client.get_shareable_url(sid);
+    if let Some(_sid) = &app.current_job_sid {
+        if let Some(status) = &app.current_job_status {
+            // Line 1: Status & Progress
+            let status_label = if status.is_done { "Done" } else { "Searching" };
+            let animation = if status.is_done { "" } else { searching_animation[app.animation_frame % searching_animation.len()] };
+            
+            let progress_span = if let Some(progress) = status.done_progress {
+                 Span::styled(format!(" ({:.1}%)", progress * 100.0), Style::default().fg(app.theme.active_label))
+            } else {
+                 Span::raw("")
+            };
+            
             stats_text.push(Line::from(vec![
-                Span::styled("URL: ", Style::default().fg(app.theme.title_secondary)),
-                Span::styled(url, Style::default().fg(app.theme.summary_highlight)),
+                Span::styled("Status: ", Style::default().fg(app.theme.title_secondary)),
+                Span::styled(format!("{}{}", status_label, animation), Style::default().fg(app.theme.text)),
+                progress_span,
+                Span::styled(" | State: ", Style::default().fg(app.theme.title_secondary)),
+                Span::styled(format!("{}", status.dispatch_state), Style::default().fg(app.theme.text)),
+            ]));
+
+            // Line 2: Metrics (Scanned, Matched, Results, Time)
+            stats_text.push(Line::from(vec![
+                Span::styled("Scanned: ", Style::default().fg(app.theme.title_secondary)),
+                Span::styled(format!("{} ", status.scan_count), Style::default().fg(app.theme.text)),
+                Span::styled("| Matched: ", Style::default().fg(app.theme.title_secondary)),
+                Span::styled(format!("{} ", status.event_count), Style::default().fg(app.theme.text)),
+                Span::styled("| Results: ", Style::default().fg(app.theme.title_secondary)),
+                Span::styled(format!("{} ", status.result_count), Style::default().fg(app.theme.text)),
+                Span::styled("| Time: ", Style::default().fg(app.theme.title_secondary)),
+                Span::styled(format!("{:.2}s", status.run_duration), Style::default().fg(app.theme.text)),
+            ]));
+
+            // URL
+            if let Some(sid_val) = &app.current_job_sid {
+                let url = app.client.get_shareable_url(sid_val);
+                stats_text.push(Line::from(vec![
+                    Span::styled("URL: ", Style::default().fg(app.theme.title_secondary)),
+                    Span::styled(url, Style::default().fg(app.theme.summary_highlight)),
+                ]));
+            }
+
+            // Messages
+            for msg in &status.messages {
+                if let Some(text) = msg.get("text").and_then(|t| t.as_str()) {
+                     let msg_type = msg.get("type").and_then(|t| t.as_str()).unwrap_or("INFO");
+                     let color = match msg_type {
+                         "FATAL" | "ERROR" => app.theme.evilness_label,
+                         "WARN" => Color::Yellow,
+                         _ => app.theme.title_secondary,
+                     };
+                     stats_text.push(Line::from(vec![
+                         Span::styled(format!("[{}] ", msg_type), Style::default().fg(color)),
+                         Span::styled(text, Style::default().fg(app.theme.text)),
+                     ]));
+                }
+            }
+        } else {
+            // Job created but status not yet fetched
+            let animation_frame = app.animation_frame % searching_animation.len();
+            stats_text.push(Line::from(vec![
+                Span::styled("Status: ", Style::default().fg(app.theme.title_secondary)),
+                Span::styled(format!("Polling status{} ", searching_animation[animation_frame]), Style::default().fg(app.theme.text)),
             ]));
         }
     } else {
+        // No active job
         stats_text.push(Line::from("No active job."));
     }
 

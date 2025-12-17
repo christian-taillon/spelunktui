@@ -11,23 +11,18 @@ pub struct JobStatus {
     pub is_done: bool,
     #[serde(rename = "dispatchState")]
     pub dispatch_state: String,
-    #[serde(rename = "resultCount")]
+    #[serde(rename = "resultCount", default)]
     pub result_count: u64,
-    #[serde(rename = "runDuration")]
+    #[serde(rename = "runDuration", default)]
     pub run_duration: f64,
-    #[serde(rename = "scanCount")]
+    #[serde(rename = "scanCount", default)]
     pub scan_count: u64,
-    #[serde(rename = "eventCount")]
+    #[serde(rename = "eventCount", default)]
     pub event_count: u64,
+    #[serde(rename = "doneProgress", default)]
+    pub done_progress: Option<f64>,
+    #[serde(rename = "messages", default)]
+    pub messages: Vec<serde_json::Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SplunkError {
-    pub messages: Vec<SplunkErrorMessage>,
-}
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SplunkErrorMessage {
-    pub r#type: String,
-    pub text: String,
-}

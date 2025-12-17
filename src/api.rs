@@ -11,10 +11,13 @@ pub struct SplunkClient {
     client: Client,
 }
 
+use std::time::Duration;
+
 impl SplunkClient {
     pub fn new(base_url: String, token: String, verify_ssl: bool) -> Self {
         let client = Client::builder()
             .danger_accept_invalid_certs(!verify_ssl)
+            .timeout(Duration::from_secs(10))
             .build()
             .expect("Failed to build HTTP client");
 

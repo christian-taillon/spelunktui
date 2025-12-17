@@ -6,19 +6,24 @@ use crossterm::{
 use ratatui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Alignment},
-    style::{Color, Style, Modifier},
+    style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Padding, BorderType},
+    widgets::{Block, Borders, Paragraph, Padding, BorderType, Wrap},
     Frame, Terminal,
 };
 use std::{error::Error, io, sync::Arc};
+use std::process::Command;
+use std::fs::File;
+use std::io::Write;
 use tokio::sync::Mutex;
-use crate::api::ThreatConnectClient;
-use crate::logic::aggregation::{GroupedIndicator, SearchStats, group_indicators, calculate_stats};
+use crate::api::SplunkClient;
+use crate::models::splunk::JobStatus;
+use serde_json::Value;
+use log::{info, error};
 
 #[derive(Clone, Copy)]
 pub enum ThemeVariant {
-    ThreatConnect,
+    Default,
     ColorPop,
 }
 
@@ -28,54 +33,33 @@ pub struct AppTheme {
     pub border: Color,
     pub text: Color,
     pub input_edit: Color,
-    pub title_main: Color,     // Stats headers, Input border
-    pub title_secondary: Color,// Type, Tags, Assoc
-    pub summary_highlight: Color, // Summary
-    pub owner_label: Color,
-    pub date_label: Color,
-    pub active_label: Color,
-    pub evilness_label: Color,
-    pub confidence_filled: Color,
-    pub confidence_empty: Color,
-    pub separator: Color,
+    pub title_main: Color,
+    pub title_secondary: Color,
+    pub highlight: Color,
 }
 
 impl AppTheme {
     pub fn default_theme() -> Self {
         Self {
-            variant: ThemeVariant::ThreatConnect,
-            border: Color::Rgb(255, 122, 79),         // TC_ORANGE
-            text: Color::White,                       // TC_WHITE
-            input_edit: Color::Rgb(255, 122, 79),     // TC_ORANGE
-            title_main: Color::Rgb(255, 122, 79),     // TC_ORANGE
-            title_secondary: Color::Rgb(250, 198, 148), // TC_LIGHT_ORANGE
-            summary_highlight: Color::Rgb(254, 124, 80), // TC_DARK_ORANGE
-            owner_label: Color::Rgb(51, 93, 127),     // TC_DARK_BLUE
-            date_label: Color::Rgb(179, 209, 247),    // TC_LIGHT_BLUE
-            active_label: Color::Rgb(255, 122, 79),   // TC_ORANGE
-            evilness_label: Color::Rgb(163, 76, 0),   // TC_VERY_DARK_ORANGE
-            confidence_filled: Color::Rgb(255, 122, 79), // TC_ORANGE
-            confidence_empty: Color::White,           // TC_WHITE
-            separator: Color::DarkGray,
+            variant: ThemeVariant::Default,
+            border: Color::Green,
+            text: Color::White,
+            input_edit: Color::Yellow,
+            title_main: Color::Green,
+            title_secondary: Color::Cyan,
+            highlight: Color::Magenta,
         }
     }
 
     pub fn color_pop() -> Self {
         Self {
             variant: ThemeVariant::ColorPop,
-            border: Color::Rgb(0, 191, 255),          // popBorder (#00bfff)
-            text: Color::Rgb(255, 255, 255),          // popText (#FFFFFF)
-            input_edit: Color::Rgb(255, 20, 147),     // popPrimary (#FF1493)
-            title_main: Color::Rgb(255, 20, 147),     // popPrimary (#FF1493)
-            title_secondary: Color::Rgb(0, 191, 255), // popAccent (#00BFFF)
-            summary_highlight: Color::Rgb(255, 20, 147), // popKeyword (#FF1493)
-            owner_label: Color::Rgb(0, 191, 255),     // popInfo (#00BFFF)
-            date_label: Color::Rgb(129, 124, 121),    // popTextMuted (#817c79)
-            active_label: Color::Rgb(0, 255, 0),      // popSuccess (#00FF00)
-            evilness_label: Color::Rgb(255, 0, 0),    // popError (#FF0000)
-            confidence_filled: Color::Rgb(255, 255, 0), // popWarning (#FFFF00)
-            confidence_empty: Color::Rgb(129, 124, 121), // popTextMuted (#817c79)
-            separator: Color::Rgb(136, 136, 136),     // popComment (#888888)
+            border: Color::Cyan,
+            text: Color::White,
+            input_edit: Color::Red,
+            title_main: Color::Yellow,
+            title_secondary: Color::Green,
+            highlight: Color::Blue,
         }
     }
 }
@@ -88,27 +72,34 @@ enum InputMode {
 pub struct App {
     input: String,
     input_mode: InputMode,
-    grouped_results: Vec<GroupedIndicator>,
-    selected_index: usize,
-    scroll_offset: u16,
-    stats: SearchStats,
-    client: Arc<ThreatConnectClient>,
+    client: Arc<SplunkClient>,
     status_message: String,
     pub theme: AppTheme,
+
+    // Search State
+    current_job_sid: Option<String>,
+    current_job_status: Option<JobStatus>,
+    search_results: Vec<Value>,
+    results_fetched: bool,
+    scroll_offset: u16,
+
+    pub should_open_editor: bool,
 }
 
 impl App {
-    pub fn new(client: Arc<ThreatConnectClient>) -> App {
+    pub fn new(client: Arc<SplunkClient>) -> App {
         App {
             input: String::new(),
             input_mode: InputMode::Normal,
-            grouped_results: Vec::new(),
-            selected_index: 0,
-            scroll_offset: 0,
-            stats: SearchStats::default(),
             client,
             status_message: String::from("Press 'q' to quit, 'e' to enter search mode, 't' to toggle theme."),
             theme: AppTheme::default_theme(),
+            current_job_sid: None,
+            current_job_status: None,
+            search_results: Vec::new(),
+            results_fetched: false,
+            scroll_offset: 0,
+            should_open_editor: false,
         }
     }
 
@@ -117,151 +108,178 @@ impl App {
             return;
         }
 
-        self.status_message = format!("Searching for '{}'...", self.input);
+        info!("Starting search for: {}", self.input);
+        self.status_message = format!("Creating search job for '{}'...", self.input);
+        self.current_job_sid = None;
+        self.current_job_status = None;
+        self.search_results.clear();
+        self.results_fetched = false;
+        self.scroll_offset = 0;
 
-        // Step 1: Initial search to get IDs (Fuzzy match, NO fields)
-        // usage of LIKE with wildcards ensures fuzzy matching works reliably
-        let tql = format!("summary like \"%{}%\"", self.input);
-        let params = vec![
-            ("tql", tql.as_str()),
-            ("resultStart", "0"),
-            ("resultLimit", "100"), // We might need pagination later, but 100 is ok for MVP
-            ("sorting", "dateAdded ASC"),
-        ];
-
-        match self.client.get::<crate::models::search::SearchResponse>("/indicators", Some(&params)).await {
-            Ok(response) => {
-                if response.data.is_empty() {
-                    self.status_message = format!("No results found for '{}'.", self.input);
-                    self.grouped_results.clear();
-                    self.stats = SearchStats::default();
-                    self.selected_index = 0;
-                    self.scroll_offset = 0;
-                    return;
-                }
-
-                // Step 2: Fetch details for found IDs in parallel chunks
-                // We limit to 100 IDs total (from Step 1 limit)
-                let basic_indicators = response.data;
-                let chunk_size = 20;
-                let chunks: Vec<Vec<crate::models::indicator::Indicator>> = basic_indicators
-                    .chunks(chunk_size)
-                    .map(|chunk| chunk.to_vec())
-                    .collect();
-
-                self.status_message = format!("Fetching details for {} indicators ({} chunks)...", basic_indicators.len(), chunks.len());
-
-                let mut handles = Vec::new();
-
-                for chunk in chunks {
-                    let client = self.client.clone();
-                    handles.push(tokio::spawn(async move {
-                        let ids: Vec<String> = chunk.iter().map(|i| i.id.to_string()).collect();
-                        let id_list = ids.join(",");
-                        let tql_ids = format!("id in ({})", id_list);
-
-                        let params_details = vec![
-                            ("tql", tql_ids.as_str()),
-                            ("resultLimit", "100"), // ample for the chunk size
-                            ("sorting", "dateAdded ASC"), 
-                            ("fields", "tags"),
-                            ("fields", "associatedGroups"),
-                            ("fields", "associatedIndicators"),
-                        ];
-
-                        match client.get::<crate::models::search::SearchResponse>("/indicators", Some(&params_details)).await {
-                            Ok(detailed_res) => detailed_res.data,
-                            Err(_) => chunk, // Fallback to basic indicators on error
-                        }
-                    }));
-                }
-
-                let mut final_indicators = Vec::new();
-                for handle in handles {
-                    if let Ok(indicators) = handle.await {
-                        final_indicators.extend(indicators);
-                    }
-                }
-
-                self.stats = calculate_stats(&final_indicators);
-                self.grouped_results = group_indicators(final_indicators);
-                self.selected_index = 0;
-                self.scroll_offset = 0;
-                self.status_message = format!("Found {} indicators in {} groups.", self.stats.total_count, self.grouped_results.len());
+        match self.client.create_search(&self.input).await {
+            Ok(sid) => {
+                info!("Job created successfully: {}", sid);
+                self.current_job_sid = Some(sid.clone());
+                self.status_message = format!("Job created (SID: {}). Waiting for results...", sid);
             }
             Err(e) => {
+                error!("Search creation failed: {}", e);
                 self.status_message = format!("Search failed: {}", e);
-                self.grouped_results.clear();
-                self.stats = SearchStats::default();
-                self.selected_index = 0;
-                self.scroll_offset = 0;
             }
         }
     }
 
-    fn next(&mut self) {
-        if self.grouped_results.is_empty() {
-            return;
+    pub async fn update_job_status(&mut self) {
+        if let Some(sid) = &self.current_job_sid {
+            // Don't poll if done and fetched
+            if self.results_fetched {
+                return;
+            }
+
+            match self.client.get_job_status(sid).await {
+                Ok(status) => {
+                    let is_done = status.is_done;
+                    self.current_job_status = Some(status);
+
+                    if is_done && !self.results_fetched {
+                         // Fetch results
+                         info!("Job {} is done. Fetching results...", sid);
+                         self.status_message = String::from("Job done. Fetching results...");
+                         match self.client.get_results(sid, 100, 0).await {
+                             Ok(results) => {
+                                 info!("Received {} results for job {}", results.len(), sid);
+                                 self.search_results = results;
+                                 self.results_fetched = true;
+                                 self.status_message = format!("Loaded {} results.", self.search_results.len());
+                             }
+                             Err(e) => {
+                                 error!("Failed to fetch results for job {}: {}", sid, e);
+                                 // Even if failed, mark as fetched so we don't loop?
+                                 // Or maybe retry? Let's stop to avoid infinite loop.
+                                 self.results_fetched = true;
+                                 self.status_message = format!("Failed to fetch results: {}", e);
+                             }
+                         }
+                    } else if !is_done {
+                        self.status_message = format!("Job running... Dispatched: {}", self.current_job_status.as_ref().unwrap().dispatch_state);
+                    }
+                }
+                Err(e) => {
+                     error!("Failed to check status for job {}: {}", sid, e);
+                     // self.status_message = format!("Failed to check status: {}", e);
+                }
+            }
         }
-        if self.selected_index >= self.grouped_results.len() - 1 {
-            self.selected_index = 0; // Wrap around
-        } else {
-            self.selected_index += 1;
-        }
-        self.scroll_offset = 0;
     }
 
-    fn previous(&mut self) {
-        if self.grouped_results.is_empty() {
+    async fn kill_search(&mut self) {
+        if let Some(sid) = &self.current_job_sid {
+            if let Err(e) = self.client.delete_job(sid).await {
+                self.status_message = format!("Failed to kill job: {}", e);
+            } else {
+                self.status_message = String::from("Job killed.");
+                self.current_job_sid = None;
+                self.current_job_status = None;
+            }
+        }
+    }
+
+    fn clear_results(&mut self) {
+        self.search_results.clear();
+        self.results_fetched = false;
+        self.current_job_sid = None;
+        self.current_job_status = None;
+        self.scroll_offset = 0;
+        self.status_message = String::from("Results cleared.");
+    }
+
+    fn open_in_editor(&mut self) {
+        if self.search_results.is_empty() {
+            self.status_message = String::from("No results to open.");
             return;
         }
-        if self.selected_index == 0 {
-            self.selected_index = self.grouped_results.len() - 1; // Wrap around
-        } else {
-            self.selected_index -= 1;
+
+        // Create temp file
+        let mut temp_dir = std::env::temp_dir();
+        temp_dir.push("splunk_results.json");
+        let file_path = temp_dir.to_str().unwrap().to_string();
+
+        if let Ok(mut file) = File::create(&file_path) {
+            let json_content = serde_json::to_string_pretty(&self.search_results).unwrap_or_default();
+            if file.write_all(json_content.as_bytes()).is_ok() {
+                // Open editor
+                let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+
+                // Suspend raw mode is handled by execute! in main loop effectively if we were blocking,
+                // but here we are in an async function called from event loop.
+                // We need to restore terminal, run command, and enable raw mode again.
+                // However, doing this deep in App struct is tricky.
+                // We will try to just spawn the command.
+                // NOTE: In a TUI, spawning an editor requires giving it control of stdin/stdout.
+                // This usually requires temporarily leaving the TUI state.
+                // For this MVP, we will try `Command::new(editor).arg(file_path).status()`.
+                // But we need to signal the main loop to pause/resume or handle it here.
+
+                // We'll set a status message that we saved it,
+                // actually OPENING it properly inside this async method without breaking TUI is hard
+                // without passing the terminal handle.
+
+                // Let's rely on the fact that we can't easily suspend from here without refactoring.
+                // Alternative: Just save to file and tell user.
+                // BUT the requirement is "open in default OS editor".
+
+                // We will use a flag or simple hack:
+                // We can use `std::process::Command` but we need to release the terminal first.
+                // Since `App` doesn't own `Terminal`, we can't.
+
+                // Refactoring opportunity: Return an Action enum from input handling instead of modifying state directly,
+                // then handle Action in `run_loop`.
+
+                // For now, let's just save the file. Opening it in TUI is advanced.
+                // WAIT, I can implement it in `run_loop` if I change how `App` communicates intentions.
+                // Let's add a `pending_action` field to App.
+                self.status_message = format!("Saved to {}. Opening...", file_path);
+                self.should_open_editor = true;
+            }
         }
-        self.scroll_offset = 0;
     }
 
     fn scroll_down(&mut self) {
-        if !self.grouped_results.is_empty() {
+        if !self.search_results.is_empty() {
             self.scroll_offset = self.scroll_offset.saturating_add(1);
         }
     }
 
     fn scroll_up(&mut self) {
-        if !self.grouped_results.is_empty() {
+        if !self.search_results.is_empty() {
             self.scroll_offset = self.scroll_offset.saturating_sub(1);
         }
     }
 
     fn toggle_theme(&mut self) {
         self.theme = match self.theme.variant {
-            ThemeVariant::ThreatConnect => AppTheme::color_pop(),
+            ThemeVariant::Default => AppTheme::color_pop(),
             ThemeVariant::ColorPop => AppTheme::default_theme(),
         };
     }
 }
 
 pub async fn run_app() -> Result<(), Box<dyn Error>> {
-    // Load and validate config before setting up the terminal
-    // This way, if config fails, we exit cleanly with a message to stdout
     let config = crate::config::Config::load()?;
     config.validate()?;
+    info!("Loaded Config URL: '{}'", config.splunk_base_url);
 
-    // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let client = Arc::new(ThreatConnectClient::new(config.tc_access_id, config.tc_secret_key, config.tc_instance));
+    let client = Arc::new(SplunkClient::new(config.splunk_base_url, config.splunk_token, config.splunk_verify_ssl));
     let app = Arc::new(Mutex::new(App::new(client)));
 
     let res = run_loop(&mut terminal, app).await;
 
-    // Restore terminal
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -277,12 +295,53 @@ pub async fn run_app() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: Arc<Mutex<App>>) -> io::Result<()> {
+async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: Arc<Mutex<App>>) -> io::Result<()> {
+    let tick_rate = std::time::Duration::from_millis(250);
+    let mut last_tick = std::time::Instant::now();
+
     loop {
         let mut app_guard = app.lock().await;
+
+        // Handle external editor opening request
+        if app_guard.should_open_editor {
+            app_guard.should_open_editor = false;
+            drop(app_guard); // Unlock to allow external process
+
+            // Restore terminal
+            disable_raw_mode()?;
+            execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+            terminal.show_cursor()?;
+
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+            let mut temp_dir = std::env::temp_dir();
+            temp_dir.push("splunk_results.json");
+            let file_path = temp_dir.to_str().unwrap().to_string();
+
+            let _ = Command::new(editor).arg(file_path).status();
+
+            // Resume TUI
+            enable_raw_mode()?;
+            execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+            terminal.hide_cursor()?;
+            terminal.clear()?;
+
+            // Re-acquire lock
+            app_guard = app.lock().await;
+        }
+
         terminal.draw(|f| ui(f, &mut app_guard))?;
 
-        if crossterm::event::poll(std::time::Duration::from_millis(100))? {
+        // Periodic updates for job status
+        if last_tick.elapsed() >= tick_rate {
+            app_guard.update_job_status().await;
+            last_tick = std::time::Instant::now();
+        }
+
+        let timeout = tick_rate
+            .checked_sub(last_tick.elapsed())
+            .unwrap_or_else(|| std::time::Duration::from_secs(0));
+
+        if crossterm::event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 match app_guard.input_mode {
                     InputMode::Normal => match key.code {
@@ -296,18 +355,30 @@ async fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: Arc<Mutex<App>>) 
                         KeyCode::Char('q') => {
                             return Ok(());
                         }
+                        KeyCode::Char('k') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                             app_guard.kill_search().await;
+                        }
+                        KeyCode::Char('x') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                             app_guard.open_in_editor();
+                        }
+                        KeyCode::Char('l') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                             app_guard.clear_results();
+                        }
                         // Navigation
-                        KeyCode::Right | KeyCode::Char('l') => {
-                            app_guard.next();
-                        }
-                        KeyCode::Left | KeyCode::Char('h') => {
-                            app_guard.previous();
-                        }
                         KeyCode::Down | KeyCode::Char('j') => {
                             app_guard.scroll_down();
                         }
-                        KeyCode::Up | KeyCode::Char('k') => {
+                        KeyCode::Up | KeyCode::Char('k') => { // Conflict with kill if we don't check modifier
                             app_guard.scroll_up();
+                        }
+                         KeyCode::Char('x') => {
+                             app_guard.kill_search().await;
+                         }
+                        KeyCode::Enter => {
+                            drop(app_guard);
+                            let mut app_guard_search = app.lock().await;
+                            app_guard_search.perform_search().await;
+                            app_guard_search.input_mode = InputMode::Normal;
                         }
                         _ => {}
                     },
@@ -317,6 +388,9 @@ async fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: Arc<Mutex<App>>) 
                             let mut app_guard_search = app.lock().await;
                             app_guard_search.perform_search().await;
                             app_guard_search.input_mode = InputMode::Normal;
+                        }
+                        KeyCode::Char('j') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            app_guard.input.push('\n');
                         }
                         KeyCode::Char(c) => {
                             app_guard.input.push(c);
@@ -342,8 +416,8 @@ fn ui(f: &mut Frame, app: &mut App) {
         .margin(1)
         .constraints(
             [
-                Constraint::Length(7), // Header: Search + Stats
-                Constraint::Min(10),   // Carousel
+                Constraint::Length(6), // Header: Search + Job Info
+                Constraint::Min(10),   // Results
                 Constraint::Length(3), // Footer
             ]
             .as_ref(),
@@ -353,7 +427,7 @@ fn ui(f: &mut Frame, app: &mut App) {
     // --- Header ---
     let header_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Length(4)])
+        .constraints([Constraint::Length(3), Constraint::Length(3)])
         .split(chunks[0]);
 
     let input_style = match app.input_mode {
@@ -367,40 +441,43 @@ fn ui(f: &mut Frame, app: &mut App) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .title("Search Indicators")
+                .title("SPL Search")
                 .border_style(Style::default().fg(app.theme.title_main))
                 .padding(Padding::horizontal(4)),
         );
     f.render_widget(input, header_chunks[0]);
 
-    // Format stats
-    let avg_rating = app.stats.avg_rating.map_or("N/A".to_string(), |r| format!("{:.1}", r));
-    let avg_conf = app.stats.avg_confidence.map_or("N/A".to_string(), |c| format!("{:.1}%", c));
+    // Job Stats
+    let mut stats_text = vec![];
+    if let Some(status) = &app.current_job_status {
+        stats_text.push(Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(app.theme.title_secondary)),
+            Span::styled(format!("{} ", if status.is_done { "Done" } else { "Running" }), Style::default().fg(app.theme.text)),
+            Span::styled(" | Count: ", Style::default().fg(app.theme.title_secondary)),
+            Span::styled(format!("{} ", status.result_count), Style::default().fg(app.theme.text)),
+            Span::styled(" | Time: ", Style::default().fg(app.theme.title_secondary)),
+            Span::styled(format!("{:.2}s ", status.run_duration), Style::default().fg(app.theme.text)),
+            Span::styled(" | State: ", Style::default().fg(app.theme.title_secondary)),
+            Span::styled(format!("{}", status.dispatch_state), Style::default().fg(app.theme.text)),
+        ]));
 
-    let stats_text = vec![
-        Line::from(vec![
-            Span::styled("Count: ", Style::default().add_modifier(Modifier::BOLD).fg(app.theme.title_main)),
-            Span::raw(format!("{}   ", app.stats.total_count)),
-            Span::styled("Owners: ", Style::default().add_modifier(Modifier::BOLD).fg(app.theme.title_main)),
-            Span::raw(format!("{}   ", app.stats.unique_owners)),
-            Span::styled("Avg Evilness: ", Style::default().add_modifier(Modifier::BOLD).fg(app.theme.title_main)),
-            Span::raw(format!("{}   ", avg_rating)),
-            Span::styled("Avg Conf: ", Style::default().add_modifier(Modifier::BOLD).fg(app.theme.title_main)),
-            Span::raw(format!("{}", avg_conf)),
-        ]),
-        Line::from(vec![
-            Span::styled("Active: ", Style::default().add_modifier(Modifier::BOLD).fg(app.theme.title_main)),
-            Span::raw(format!("{}   ", app.stats.active_count)),
-            Span::styled("False Positives: ", Style::default().add_modifier(Modifier::BOLD).fg(app.theme.title_main)),
-            Span::raw(format!("{}   ", app.stats.false_positives)),
-        ]),
-    ];
+        // Shareable URL
+        if let Some(sid) = &app.current_job_sid {
+            let url = app.client.get_shareable_url(sid);
+            stats_text.push(Line::from(vec![
+                Span::styled("URL: ", Style::default().fg(app.theme.title_secondary)),
+                Span::styled(url, Style::default().fg(app.theme.highlight)),
+            ]));
+        }
+    } else {
+        stats_text.push(Line::from("No active job."));
+    }
 
     let stats_paragraph = Paragraph::new(stats_text)
         .block(
             Block::default()
-                .borders(Borders::TOP)
-                .title("Search Stats")
+                .borders(Borders::BOTTOM)
+                .title("Job Status")
                 .border_style(Style::default().fg(app.theme.title_main))
                 .padding(Padding::horizontal(4)),
         )
@@ -408,179 +485,81 @@ fn ui(f: &mut Frame, app: &mut App) {
 
     f.render_widget(stats_paragraph, header_chunks[1]);
 
-    // --- Carousel (Main Content) ---
+    // --- Results ---
 
-    let carousel_area = chunks[1];
+    let results_area = chunks[1];
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .title("Indicator Results")
+        .title("Search Results")
         .border_style(Style::default().fg(app.theme.border))
-        .padding(Padding::new(4, 4, 1, 0)); // Top padding 1
+        .padding(Padding::new(2, 2, 1, 1));
 
-    if app.grouped_results.is_empty() {
-        let text = Paragraph::new("No results found. Press 'e' to search.")
+    if app.search_results.is_empty() {
+        let text = Paragraph::new("No results available.")
             .alignment(Alignment::Center)
             .style(Style::default().fg(app.theme.text))
             .block(block);
-        f.render_widget(text, carousel_area);
+        f.render_widget(text, results_area);
     } else {
-        let group = &app.grouped_results[app.selected_index];
-        let current_index = app.selected_index + 1;
-        let total = app.grouped_results.len();
-
-        let card_title = format!(" Item {} of {} ", current_index, total);
-        let card_block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title(card_title)
-            .border_style(Style::default().fg(app.theme.border))
-            .padding(Padding::new(4, 4, 1, 0)); // Top padding 1
-
-        // Content of the card
         let mut content = vec![];
 
-        // Header info for the group
-        content.push(Line::from(vec![
-            Span::styled("Summary: ", Style::default().fg(app.theme.summary_highlight).add_modifier(Modifier::BOLD)),
-            Span::styled(group.summary.clone(), Style::default().add_modifier(Modifier::BOLD).fg(app.theme.text)),
-        ]));
-        content.push(Line::from(vec![
-            Span::styled("Type: ", Style::default().fg(app.theme.title_secondary).add_modifier(Modifier::BOLD)),
-            Span::styled(group.indicator_type.clone(), Style::default().fg(app.theme.text)),
-        ]));
-        // Removed empty line before divider
-        let divider_len = carousel_area.width.saturating_sub(10) as usize; // width - borders(2) - padding(8)
-        content.push(Line::from(Span::styled("─".repeat(divider_len), Style::default().fg(app.theme.text))));
+        for (i, result) in app.search_results.iter().enumerate() {
+            if i > 0 {
+                content.push(Line::from(Span::styled("-".repeat(results_area.width as usize - 6), Style::default().fg(app.theme.border))));
+            }
 
-        // List all indicators
-        for (idx, indicator) in group.indicators.iter().enumerate() {
-            if idx > 0 {
-                content.push(Line::from(""));
-                content.push(Line::from(Span::styled("- - - - -", Style::default().fg(app.theme.separator))));
-                content.push(Line::from(""));
+            // Assuming result is a JSON object, nice print it
+            if let Some(obj) = result.as_object() {
+                 for (k, v) in obj {
+                     if k.starts_with("_") && k != "_time" && k != "_raw" { continue; } // Skip internal fields except time and raw
+
+                     let val_str = if let Some(s) = v.as_str() { s.to_string() } else { v.to_string() };
+
+                     content.push(Line::from(vec![
+                         Span::styled(format!("{}: ", k), Style::default().fg(app.theme.highlight)),
+                         Span::styled(val_str, Style::default().fg(app.theme.text)),
+                     ]));
+                 }
             } else {
-                content.push(Line::from(""));
-            }
-
-            let rating_skulls = "💀".repeat(indicator.rating.round() as usize);
-
-            // Layout:
-            // Owner: ... | Active: ...
-            // Added: ... | Modified: ...
-            // Evilness: ...
-            // Confidence: ... [---    ]
-
-            // Line 1
-            content.push(Line::from(vec![
-                Span::styled("Owner: ", Style::default().fg(app.theme.owner_label).add_modifier(Modifier::BOLD)),
-                Span::styled(indicator.owner_name.clone(), Style::default().fg(app.theme.text)),
-                Span::styled(" | ", Style::default().fg(app.theme.text)),
-                Span::styled("Active: ", Style::default().fg(app.theme.active_label).add_modifier(Modifier::BOLD)),
-                Span::styled(if indicator.active { "Yes" } else { "No" }, Style::default().fg(app.theme.text)),
-            ]));
-
-            // Line 2
-            content.push(Line::from(vec![
-                Span::styled("Added: ", Style::default().fg(app.theme.date_label)),
-                Span::styled(indicator.date_added.format("%Y-%m-%d %H:%M").to_string(), Style::default().fg(app.theme.text)),
-                Span::styled(" | ", Style::default().fg(app.theme.text)),
-                Span::styled("Modified: ", Style::default().fg(app.theme.date_label)),
-                Span::styled(indicator.last_modified.format("%Y-%m-%d %H:%M").to_string(), Style::default().fg(app.theme.text)),
-            ]));
-
-            // Line 3: Evilness
-            content.push(Line::from(vec![
-                Span::styled("Evilness: ", Style::default().fg(app.theme.evilness_label)),
-                Span::styled(format!("{} ({:.1})", rating_skulls, indicator.rating), Style::default().fg(app.theme.text)),
-            ]));
-
-            // Line 4: Confidence Bar
-            let conf_val = indicator.confidence as u32; // 0-100
-            let filled_count = (conf_val as f32 / 10.0).round() as usize;
-            let filled_count = filled_count.clamp(0, 10);
-            let empty_count = 10 - filled_count;
-
-            let filled_bar = "-".repeat(filled_count);
-            let empty_bar = "-".repeat(empty_count);
-
-            content.push(Line::from(vec![
-                Span::styled("Confidence: ", Style::default().fg(app.theme.title_main)),
-                Span::styled(format!("{}% [", conf_val), Style::default().fg(app.theme.text)),
-                Span::styled(filled_bar, Style::default().fg(app.theme.confidence_filled)),
-                Span::styled(empty_bar, Style::default().fg(app.theme.confidence_empty)),
-                Span::styled("]", Style::default().fg(app.theme.text)),
-            ]));
-
-            if let Some(desc) = &indicator.description {
-                if !desc.is_empty() {
-                    content.push(Line::from(Span::styled("Description:", Style::default().add_modifier(Modifier::UNDERLINED).fg(app.theme.text))));
-                    content.push(Line::from(Span::styled(desc.clone(), Style::default().fg(app.theme.text))));
-                }
-            }
-
-            // Tags
-            if !indicator.tags.is_empty() {
-                // Empty line break between description (or previous field) and tags
-                content.push(Line::from(""));
-
-                let tags_str: String = indicator.tags.iter()
-                    .map(|t| t.name.clone())
-                    .collect::<Vec<String>>()
-                    .join(" | ");
-
-                content.push(Line::from(vec![
-                    Span::styled("Tags: ", Style::default().fg(app.theme.title_secondary).add_modifier(Modifier::BOLD)),
-                    Span::styled(tags_str, Style::default().fg(app.theme.text)),
-                ]));
-            }
-
-            // Associated Groups
-            if !indicator.associated_groups.is_empty() {
-                content.push(Line::from(Span::styled("Associated Groups:", Style::default().fg(app.theme.title_secondary).add_modifier(Modifier::BOLD))));
-                for group in &indicator.associated_groups {
-                    let name = group.name.clone().or(group.summary.clone()).unwrap_or_else(|| "Unknown".to_string());
-                    content.push(Line::from(vec![
-                        Span::styled("  • ", Style::default().fg(app.theme.text)),
-                        Span::styled(name, Style::default().fg(app.theme.text)),
-                    ]));
-                }
-            }
-
-            // Associated Indicators
-            if !indicator.associated_indicators.is_empty() {
-                content.push(Line::from(Span::styled("Associated Indicators:", Style::default().fg(app.theme.title_secondary).add_modifier(Modifier::BOLD))));
-                for assoc_ind in &indicator.associated_indicators {
-                    let name = assoc_ind.summary.clone().or(assoc_ind.name.clone()).unwrap_or_else(|| "Unknown".to_string());
-                    content.push(Line::from(vec![
-                        Span::styled("  • ", Style::default().fg(app.theme.text)),
-                        Span::styled(name, Style::default().fg(app.theme.text)),
-                    ]));
-                }
+                 content.push(Line::from(format!("{:?}", result)));
             }
         }
 
-        // Render Paragraph with scroll
         let paragraph = Paragraph::new(content)
-            .block(card_block)
-            .alignment(Alignment::Left)
+            .block(block)
+            .wrap(Wrap { trim: true })
             .scroll((app.scroll_offset, 0));
 
-        f.render_widget(paragraph, carousel_area);
+        f.render_widget(paragraph, results_area);
     }
 
     // --- Footer ---
+    let mut footer_spans = vec![
+        Span::styled(" e ", Style::default().fg(app.theme.title_main)),
+        Span::styled("Search  |  ", Style::default().fg(app.theme.text)),
+    ];
+
+    if let Some(status) = &app.current_job_status {
+        if !status.is_done {
+            footer_spans.push(Span::styled(" x ", Style::default().fg(app.theme.title_main)));
+            footer_spans.push(Span::styled("Kill Job  |  ", Style::default().fg(app.theme.text)));
+        }
+    }
+
+    footer_spans.extend(vec![
+        Span::styled(" ↑/↓ ", Style::default().fg(app.theme.title_main)),
+        Span::styled("Scroll  |  ", Style::default().fg(app.theme.text)),
+        Span::styled(" ^X ", Style::default().fg(app.theme.title_main)),
+        Span::styled("Open in Editor  |  ", Style::default().fg(app.theme.text)),
+        Span::styled(" ^L ", Style::default().fg(app.theme.title_main)),
+        Span::styled("Clear  |  ", Style::default().fg(app.theme.text)),
+        Span::styled(" q ", Style::default().fg(app.theme.title_main)),
+        Span::styled("Quit", Style::default().fg(app.theme.text)),
+    ]);
+
     let footer_text = vec![
-        Line::from(vec![
-            Span::styled(" ←/→ ", Style::default().fg(app.theme.title_main)),
-            Span::styled("Next/Prev Group  |  ", Style::default().fg(app.theme.text)),
-            Span::styled(" ↑/↓ ", Style::default().fg(app.theme.title_main)),
-            Span::styled("Scroll  |  ", Style::default().fg(app.theme.text)),
-            Span::styled(" e ", Style::default().fg(app.theme.title_main)),
-            Span::styled("Search  |  ", Style::default().fg(app.theme.text)),
-            Span::styled(" q ", Style::default().fg(app.theme.title_main)),
-            Span::styled("Quit", Style::default().fg(app.theme.text)),
-        ]),
+        Line::from(footer_spans),
         Line::from(Span::styled(app.status_message.clone(), Style::default().fg(app.theme.text))),
     ];
     let footer = Paragraph::new(footer_text)
@@ -596,7 +575,6 @@ fn ui(f: &mut Frame, app: &mut App) {
 
     // Set cursor
     if let InputMode::Editing = app.input_mode {
-        // x = rect.x + border(1) + padding(4) + "> " (2) + input_len
         f.set_cursor_position(ratatui::layout::Position::new(
             header_chunks[0].x + 1 + 4 + 2 + app.input.len() as u16,
             header_chunks[0].y + 1,

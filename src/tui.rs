@@ -12,11 +12,13 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::{error::Error, io, sync::Arc};
+use std::process::Command;
+use std::fs::File;
+use std::io::Write;
 use tokio::sync::Mutex;
 use crate::api::SplunkClient;
 use crate::models::splunk::JobStatus;
 use serde_json::Value;
-use log::{info, error};
 
 #[derive(Clone, Copy)]
 pub enum ThemeVariant {
@@ -79,6 +81,8 @@ pub struct App {
     search_results: Vec<Value>,
     results_fetched: bool,
     scroll_offset: u16,
+
+    pub should_open_editor: bool,
 }
 
 impl App {
@@ -94,6 +98,7 @@ impl App {
             search_results: Vec::new(),
             results_fetched: false,
             scroll_offset: 0,
+            should_open_editor: false,
         }
     }
 
@@ -102,7 +107,6 @@ impl App {
             return;
         }
 
-        info!("Starting search for: {}", self.input);
         self.status_message = format!("Creating search job for '{}'...", self.input);
         self.current_job_sid = None;
         self.current_job_status = None;
@@ -112,12 +116,10 @@ impl App {
 
         match self.client.create_search(&self.input).await {
             Ok(sid) => {
-                info!("Job created successfully: {}", sid);
                 self.current_job_sid = Some(sid.clone());
                 self.status_message = format!("Job created (SID: {}). Waiting for results...", sid);
             }
             Err(e) => {
-                error!("Search creation failed: {}", e);
                 self.status_message = format!("Search failed: {}", e);
             }
         }
@@ -137,17 +139,14 @@ impl App {
 
                     if is_done && !self.results_fetched {
                          // Fetch results
-                         info!("Job {} is done. Fetching results...", sid);
                          self.status_message = String::from("Job done. Fetching results...");
                          match self.client.get_results(sid, 100, 0).await {
                              Ok(results) => {
-                                 info!("Received {} results for job {}", results.len(), sid);
                                  self.search_results = results;
                                  self.results_fetched = true;
                                  self.status_message = format!("Loaded {} results.", self.search_results.len());
                              }
                              Err(e) => {
-                                 error!("Failed to fetch results for job {}: {}", sid, e);
                                  // Even if failed, mark as fetched so we don't loop?
                                  // Or maybe retry? Let's stop to avoid infinite loop.
                                  self.results_fetched = true;
@@ -158,8 +157,7 @@ impl App {
                         self.status_message = format!("Job running... Dispatched: {}", self.current_job_status.as_ref().unwrap().dispatch_state);
                     }
                 }
-                Err(e) => {
-                     error!("Failed to check status for job {}: {}", sid, e);
+                Err(_) => {
                      // self.status_message = format!("Failed to check status: {}", e);
                 }
             }
@@ -174,6 +172,66 @@ impl App {
                 self.status_message = String::from("Job killed.");
                 self.current_job_sid = None;
                 self.current_job_status = None;
+            }
+        }
+    }
+
+    fn clear_results(&mut self) {
+        self.search_results.clear();
+        self.results_fetched = false;
+        self.current_job_sid = None;
+        self.current_job_status = None;
+        self.scroll_offset = 0;
+        self.status_message = String::from("Results cleared.");
+    }
+
+    fn open_in_editor(&mut self) {
+        if self.search_results.is_empty() {
+            self.status_message = String::from("No results to open.");
+            return;
+        }
+
+        // Create temp file
+        let mut temp_dir = std::env::temp_dir();
+        temp_dir.push("splunk_results.json");
+        let file_path = temp_dir.to_str().unwrap().to_string();
+
+        if let Ok(mut file) = File::create(&file_path) {
+            let json_content = serde_json::to_string_pretty(&self.search_results).unwrap_or_default();
+            if file.write_all(json_content.as_bytes()).is_ok() {
+                // Open editor
+                let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+
+                // Suspend raw mode is handled by execute! in main loop effectively if we were blocking,
+                // but here we are in an async function called from event loop.
+                // We need to restore terminal, run command, and enable raw mode again.
+                // However, doing this deep in App struct is tricky.
+                // We will try to just spawn the command.
+                // NOTE: In a TUI, spawning an editor requires giving it control of stdin/stdout.
+                // This usually requires temporarily leaving the TUI state.
+                // For this MVP, we will try `Command::new(editor).arg(file_path).status()`.
+                // But we need to signal the main loop to pause/resume or handle it here.
+
+                // We'll set a status message that we saved it,
+                // actually OPENING it properly inside this async method without breaking TUI is hard
+                // without passing the terminal handle.
+
+                // Let's rely on the fact that we can't easily suspend from here without refactoring.
+                // Alternative: Just save to file and tell user.
+                // BUT the requirement is "open in default OS editor".
+
+                // We will use a flag or simple hack:
+                // We can use `std::process::Command` but we need to release the terminal first.
+                // Since `App` doesn't own `Terminal`, we can't.
+
+                // Refactoring opportunity: Return an Action enum from input handling instead of modifying state directly,
+                // then handle Action in `run_loop`.
+
+                // For now, let's just save the file. Opening it in TUI is advanced.
+                // WAIT, I can implement it in `run_loop` if I change how `App` communicates intentions.
+                // Let's add a `pending_action` field to App.
+                self.status_message = format!("Saved to {}. Opening...", file_path);
+                self.should_open_editor = true;
             }
         }
     }
@@ -197,7 +255,6 @@ impl App {
         };
     }
 }
-
 
 pub async fn run_app() -> Result<(), Box<dyn Error>> {
     let config = crate::config::Config::load()?;
@@ -229,12 +286,40 @@ pub async fn run_app() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: Arc<Mutex<App>>) -> io::Result<()> {
+async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: Arc<Mutex<App>>) -> io::Result<()> {
     let tick_rate = std::time::Duration::from_millis(250);
     let mut last_tick = std::time::Instant::now();
 
     loop {
         let mut app_guard = app.lock().await;
+
+        // Handle external editor opening request
+        if app_guard.should_open_editor {
+            app_guard.should_open_editor = false;
+            drop(app_guard); // Unlock to allow external process
+
+            // Restore terminal
+            disable_raw_mode()?;
+            execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+            terminal.show_cursor()?;
+
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+            let mut temp_dir = std::env::temp_dir();
+            temp_dir.push("splunk_results.json");
+            let file_path = temp_dir.to_str().unwrap().to_string();
+
+            let _ = Command::new(editor).arg(file_path).status();
+
+            // Resume TUI
+            enable_raw_mode()?;
+            execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+            terminal.hide_cursor()?;
+            terminal.clear()?;
+
+            // Re-acquire lock
+            app_guard = app.lock().await;
+        }
+
         terminal.draw(|f| ui(f, &mut app_guard))?;
 
         // Periodic updates for job status
@@ -264,6 +349,12 @@ async fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: Arc<Mutex<App>>) 
                         KeyCode::Char('k') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                              app_guard.kill_search().await;
                         }
+                        KeyCode::Char('x') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                             app_guard.open_in_editor();
+                        }
+                        KeyCode::Char('l') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                             app_guard.clear_results();
+                        }
                         // Navigation
                         KeyCode::Down | KeyCode::Char('j') => {
                             app_guard.scroll_down();
@@ -282,6 +373,9 @@ async fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: Arc<Mutex<App>>) 
                             let mut app_guard_search = app.lock().await;
                             app_guard_search.perform_search().await;
                             app_guard_search.input_mode = InputMode::Normal;
+                        }
+                        KeyCode::Char('j') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            app_guard.input.push('\n');
                         }
                         KeyCode::Char(c) => {
                             app_guard.input.push(c);
@@ -426,19 +520,31 @@ fn ui(f: &mut Frame, app: &mut App) {
     }
 
     // --- Footer ---
+    let mut footer_spans = vec![
+        Span::styled(" e ", Style::default().fg(app.theme.title_main)),
+        Span::styled("Search  |  ", Style::default().fg(app.theme.text)),
+    ];
+
+    if let Some(status) = &app.current_job_status {
+        if !status.is_done {
+            footer_spans.push(Span::styled(" x ", Style::default().fg(app.theme.title_main)));
+            footer_spans.push(Span::styled("Kill Job  |  ", Style::default().fg(app.theme.text)));
+        }
+    }
+
+    footer_spans.extend(vec![
+        Span::styled(" ↑/↓ ", Style::default().fg(app.theme.title_main)),
+        Span::styled("Scroll  |  ", Style::default().fg(app.theme.text)),
+        Span::styled(" ^X ", Style::default().fg(app.theme.title_main)),
+        Span::styled("Open in Editor  |  ", Style::default().fg(app.theme.text)),
+        Span::styled(" ^L ", Style::default().fg(app.theme.title_main)),
+        Span::styled("Clear  |  ", Style::default().fg(app.theme.text)),
+        Span::styled(" q ", Style::default().fg(app.theme.title_main)),
+        Span::styled("Quit", Style::default().fg(app.theme.text)),
+    ]);
+
     let footer_text = vec![
-        Line::from(vec![
-            Span::styled(" e ", Style::default().fg(app.theme.title_main)),
-            Span::styled("Search  |  ", Style::default().fg(app.theme.text)),
-            Span::styled(" x ", Style::default().fg(app.theme.title_main)),
-            Span::styled("Kill Job  |  ", Style::default().fg(app.theme.text)),
-            Span::styled(" ↑/↓ ", Style::default().fg(app.theme.title_main)),
-            Span::styled("Scroll  |  ", Style::default().fg(app.theme.text)),
-            Span::styled(" t ", Style::default().fg(app.theme.title_main)),
-            Span::styled("Theme  |  ", Style::default().fg(app.theme.text)),
-            Span::styled(" q ", Style::default().fg(app.theme.title_main)),
-            Span::styled("Quit", Style::default().fg(app.theme.text)),
-        ]),
+        Line::from(footer_spans),
         Line::from(Span::styled(app.status_message.clone(), Style::default().fg(app.theme.text))),
     ];
     let footer = Paragraph::new(footer_text)

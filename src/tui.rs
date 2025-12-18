@@ -7,9 +7,9 @@ use crossterm::{
 use ratatui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Alignment, Rect},
-    style::{Color, Style},
+    style::{Color, Style, Modifier},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Padding, BorderType, Wrap, List, ListItem, ListState},
+    widgets::{Block, Borders, Paragraph, Padding, BorderType, Wrap, List, ListItem, ListState, Table, Row, Cell, TableState, Sparkline},
     Frame, Terminal,
 };
 use std::{error::Error, io, sync::Arc};
@@ -22,6 +22,7 @@ use crate::models::splunk::JobStatus;
 use crate::utils::saved_searches::SavedSearchManager;
 use serde_json::Value;
 use log::{info, error};
+use chrono;
 
 #[derive(Clone, Copy)]
 pub enum ThemeVariant {
@@ -127,6 +128,19 @@ pub enum VimState {
     Insert,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ViewMode {
+    RawEvents,
+    Table,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ViewFocus {
+    Search,
+    ContentList,
+    ContentDetail,
+}
+
 pub struct App {
     input: String,
     input_scroll: u16,
@@ -134,6 +148,12 @@ pub struct App {
     client: Arc<SplunkClient>,
     status_message: String,
     pub theme: AppTheme,
+
+    // View Mode
+    pub view_mode: ViewMode,
+    pub view_focus: ViewFocus,
+    pub table_state: TableState,
+    pub detail_scroll: u16,
 
     // Search State
     current_job_sid: Option<String>,
@@ -171,6 +191,10 @@ impl App {
             client,
             status_message: String::from("Press 'q' to quit, 'e' to enter search mode, 't' to toggle theme."),
             theme: AppTheme::default_theme(),
+            view_mode: ViewMode::RawEvents,
+            view_focus: ViewFocus::Search,
+            table_state: TableState::default(),
+            detail_scroll: 0,
             current_job_sid: None,
             current_job_status: None,
             search_results: Vec::new(),
@@ -700,7 +724,7 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                             return Ok(());
                         }
                         KeyCode::Char('k') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                             app_guard.kill_search().await;
+                             app_guard.scroll_up_fast();
                         }
                         KeyCode::Char('x') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                              app_guard.open_in_editor();
@@ -728,11 +752,109 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                              app_guard.initiate_save_search();
                         }
 
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            app_guard.scroll_down();
+                        KeyCode::Char('v') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            app_guard.view_mode = match app_guard.view_mode {
+                                ViewMode::RawEvents => ViewMode::Table,
+                                ViewMode::Table => ViewMode::RawEvents,
+                            };
+                            app_guard.status_message = format!("Switched to {:?} mode.", app_guard.view_mode);
                         }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            app_guard.scroll_up();
+
+                        KeyCode::Tab => {
+                            app_guard.view_focus = match app_guard.view_focus {
+                                ViewFocus::Search => ViewFocus::ContentList,
+                                ViewFocus::ContentList => {
+                                    if app_guard.view_mode == ViewMode::Table {
+                                        ViewFocus::ContentDetail
+                                    } else {
+                                        ViewFocus::Search
+                                    }
+                                },
+                                ViewFocus::ContentDetail => ViewFocus::Search,
+                            };
+                        }
+
+                        KeyCode::Left | KeyCode::Char('h') => {
+                            app_guard.view_focus = ViewFocus::ContentList;
+                        }
+
+                        KeyCode::Right | KeyCode::Char('l') if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                             if app_guard.view_mode == ViewMode::Table {
+                                 app_guard.view_focus = ViewFocus::ContentDetail;
+                             }
+                        }
+
+                        KeyCode::Down | KeyCode::Char('j') if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                             if let ViewFocus::Search = app_guard.view_focus {
+                                 // Optional: Down from Search goes to Content
+                                 app_guard.view_focus = ViewFocus::ContentList;
+                             } else {
+                                 match app_guard.view_mode {
+                                     ViewMode::RawEvents => app_guard.scroll_down(),
+                                     ViewMode::Table => {
+                                         match app_guard.view_focus {
+                                             ViewFocus::ContentList => {
+                                                 let next = match app_guard.table_state.selected() {
+                                                     Some(i) => {
+                                                         if i >= app_guard.search_results.len().saturating_sub(1) {
+                                                             0
+                                                         } else {
+                                                             i + 1
+                                                         }
+                                                     }
+                                                     None => 0,
+                                                 };
+                                                 if !app_guard.search_results.is_empty() {
+                                                     app_guard.table_state.select(Some(next));
+                                                     app_guard.detail_scroll = 0; // Reset detail scroll on row change
+                                                 }
+                                             }
+                                             ViewFocus::ContentDetail => {
+                                                 app_guard.detail_scroll = app_guard.detail_scroll.saturating_add(1);
+                                             }
+                                             _ => {}
+                                         }
+                                     }
+                                 }
+                             }
+                        }
+                        KeyCode::Up | KeyCode::Char('k') if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                             match app_guard.view_mode {
+                                 ViewMode::RawEvents => app_guard.scroll_up(),
+                                 ViewMode::Table => {
+                                     match app_guard.view_focus {
+                                         ViewFocus::ContentList => {
+                                             let prev = match app_guard.table_state.selected() {
+                                                 Some(i) => {
+                                                     if i == 0 {
+                                                         app_guard.search_results.len().saturating_sub(1)
+                                                     } else {
+                                                         i - 1
+
+                                                     }
+                                                 }
+                                                 None => 0,
+                                             };
+                                             if !app_guard.search_results.is_empty() {
+                                                 app_guard.table_state.select(Some(prev));
+                                                 app_guard.detail_scroll = 0;
+                                             }
+                                         }
+                                         ViewFocus::ContentDetail => {
+                                             app_guard.detail_scroll = app_guard.detail_scroll.saturating_sub(1);
+                                         }
+                                         _ => {}
+                                     }
+                                 }
+                             }
+                        }
+
+                        KeyCode::Char('x') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            if let ViewFocus::Search = app_guard.view_focus {
+                                app_guard.open_query_in_editor();
+                            } else {
+                                app_guard.open_in_editor();
+                            }
                         }
                         // 'x' mapping removed as requested
                         KeyCode::Enter => {
@@ -911,16 +1033,20 @@ fn ui(f: &mut Frame, app: &mut App) {
     let max_height = f.area().height / 2;
     let desired_input_height = input_lines + 2;
     let actual_input_height = desired_input_height.min(max_height);
-    let header_height = actual_input_height + 3;
+    // Header height is just the input height now, but user requested fixed 2 lines box (height ~3 or 4)
+    // "Spl Search should be default be two lines box" -> borders + 1 line? or borders + 2 lines?
+    // Let's assume height 3 (Border, Content, Border).
+    let header_height = 3;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
         .constraints(
             [
-                Constraint::Length(header_height), // Dynamic Header
-                Constraint::Min(10),   // Results
-                Constraint::Length(3), // Footer
+                Constraint::Length(header_height), // Header: Search + Sparkline
+                Constraint::Length(1),             // Job Status (no block borders)
+                Constraint::Min(10),               // Content
+                Constraint::Length(1),             // Footer (Navigation, centered, one line)
             ]
             .as_ref(),
         )
@@ -928,10 +1054,11 @@ fn ui(f: &mut Frame, app: &mut App) {
 
     // --- Header ---
     let header_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(actual_input_height), Constraint::Length(3)])
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
         .split(chunks[0]);
 
+    // 1. Search Input
     let input_style = match app.input_mode {
         InputMode::Normal => Style::default().fg(app.theme.text),
         InputMode::Editing => Style::default().fg(app.theme.input_edit),
@@ -942,7 +1069,6 @@ fn ui(f: &mut Frame, app: &mut App) {
     let mut input_scroll = 0;
 
     // Auto-scroll logic: Ensure cursor is visible
-    // We need to know which line the cursor is on.
     let cursor_byte_idx = app.cursor_position;
     let text_before = &app.input[..cursor_byte_idx.min(app.input.len())];
     let cursor_line_idx = text_before.matches('\n').count() as u16;
@@ -971,36 +1097,81 @@ fn ui(f: &mut Frame, app: &mut App) {
         .scroll((input_scroll, 0));
     f.render_widget(input, header_chunks[0]);
 
-    // Job Stats & Results logic
+    // 2. Sparkline
+    let mut spark_data = vec![];
+    if !app.search_results.is_empty() {
+        // Simple bucketing of time
+        // Note: parsing _time string requires chrono
+        // format: 2023-10-27T10:00:00.000+00:00
+        let timestamps: Vec<i64> = app.search_results.iter().filter_map(|v| {
+            v.get("_time").and_then(|t| t.as_str()).and_then(|s| {
+                chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.timestamp())
+            })
+        }).collect();
+
+        if !timestamps.is_empty() {
+            let min = *timestamps.iter().min().unwrap_or(&0);
+            let max = *timestamps.iter().max().unwrap_or(&0);
+            if max > min {
+                let range = max - min;
+                let buckets = 40; // Approx width
+                let mut counts = vec![0u64; buckets];
+                for t in timestamps {
+                    let idx = ((t - min) as f64 / range as f64 * (buckets - 1) as f64) as usize;
+                    if idx < buckets {
+                        counts[idx] += 1;
+                    }
+                }
+                spark_data = counts;
+            }
+        }
+    }
+
+    let sparkline = Sparkline::default()
+        .block(Block::default().title("Activity").borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)))
+        .data(&spark_data)
+        .style(Style::default().fg(app.theme.summary_highlight));
+    f.render_widget(sparkline, header_chunks[1]);
+
+
+    // --- Job Status (Middle 1) ---
     let mut stats_text = vec![];
 
     // Elapsed Time calculation
-    let elapsed_text = if let Some(start_time) = app.job_created_at {
-        let elapsed = start_time.elapsed().as_secs();
-        format!("(Elapsed: {}s) ", elapsed)
+    let elapsed_text = if let Some(status) = &app.current_job_status {
+        if status.is_done {
+            String::new() // Don't show elapsed if done, rely on "Time" field
+        } else if let Some(start_time) = app.job_created_at {
+             let elapsed = start_time.elapsed().as_secs();
+             format!("(Elapsed: {}s) ", elapsed)
+        } else {
+            String::new()
+        }
+    } else if let Some(start_time) = app.job_created_at {
+         let elapsed = start_time.elapsed().as_secs();
+         format!("(Elapsed: {}s) ", elapsed)
     } else {
         String::new()
     };
 
     if let Some(status) = &app.current_job_status {
-        stats_text.push(Line::from(vec![
+        let mut line_vec = vec![
             Span::styled("Status: ", Style::default().fg(app.theme.title_secondary)),
             Span::styled(format!("{} {} ", if status.is_done { "Done" } else { "Running" }, elapsed_text), Style::default().fg(app.theme.text)),
             Span::styled(" | Count: ", Style::default().fg(app.theme.title_secondary)),
             Span::styled(format!("{} ", status.result_count), Style::default().fg(app.theme.text)),
             Span::styled(" | Time: ", Style::default().fg(app.theme.title_secondary)),
             Span::styled(format!("{:.2}s ", status.run_duration), Style::default().fg(app.theme.text)),
-            Span::styled(" | State: ", Style::default().fg(app.theme.title_secondary)),
-            Span::styled(format!("{}", status.dispatch_state), Style::default().fg(app.theme.text)),
-        ]));
+        ];
 
         if let Some(sid) = &app.current_job_sid {
             let url = app.client.get_shareable_url(sid);
-            stats_text.push(Line::from(vec![
-                Span::styled("URL: ", Style::default().fg(app.theme.title_secondary)),
-                Span::styled(url, Style::default().fg(app.theme.summary_highlight)),
-            ]));
+            line_vec.push(Span::styled(" | URL: ", Style::default().fg(app.theme.title_secondary)));
+            line_vec.push(Span::styled(url, Style::default().fg(app.theme.summary_highlight)));
         }
+
+        stats_text.push(Line::from(line_vec));
+
     } else if let Some(sid) = &app.current_job_sid {
         // Job created but status not yet fetched
         stats_text.push(Line::from(vec![
@@ -1013,23 +1184,20 @@ fn ui(f: &mut Frame, app: &mut App) {
     }
 
     let stats_paragraph = Paragraph::new(stats_text)
-        .block(
-            Block::default()
-                // Removed borders(Borders::BOTTOM) as requested
-                .title("Job Status")
-                .border_style(Style::default().fg(app.theme.title_main))
-                .padding(Padding::horizontal(4)),
-        )
+        .alignment(Alignment::Center)
         .style(Style::default().fg(app.theme.text));
+    f.render_widget(stats_paragraph, chunks[1]);
 
-    f.render_widget(stats_paragraph, header_chunks[1]);
 
-    // --- Results ---
-    let results_area = chunks[1];
+    // --- Results (Middle 2) ---
+    let results_area = chunks[2];
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .title("Search Results")
+        .title(match app.view_mode {
+            ViewMode::RawEvents => "Search Results (Raw)",
+            ViewMode::Table => "Search Results (Table)",
+        })
         .border_style(Style::default().fg(app.theme.border))
         .padding(Padding::new(2, 2, 1, 1));
 
@@ -1040,32 +1208,130 @@ fn ui(f: &mut Frame, app: &mut App) {
             .block(block);
         f.render_widget(text, results_area);
     } else {
-        let mut content = vec![];
-        for (i, result) in app.search_results.iter().enumerate() {
-            if i > 0 {
-                content.push(Line::from(Span::styled("-".repeat(results_area.width as usize - 6), Style::default().fg(app.theme.border))));
+        match app.view_mode {
+            ViewMode::RawEvents => {
+                let mut content = vec![];
+                for (i, result) in app.search_results.iter().enumerate() {
+                    if i > 0 {
+                        content.push(Line::from(Span::styled("-".repeat(results_area.width as usize - 6), Style::default().fg(app.theme.border))));
+                    }
+                    if let Some(obj) = result.as_object() {
+                         for (k, v) in obj {
+                             if k.starts_with("_") && k != "_time" && k != "_raw" { continue; }
+                             let val_str = if let Some(s) = v.as_str() { s.to_string() } else { v.to_string() };
+                             content.push(Line::from(vec![
+                                 Span::styled(format!("{}: ", k), Style::default().fg(app.theme.summary_highlight)),
+                                 Span::styled(val_str, Style::default().fg(app.theme.text)),
+                             ]));
+                         }
+                    } else {
+                         content.push(Line::from(format!("{:?}", result)));
+                    }
+                }
+                let paragraph = Paragraph::new(content)
+                    .block(block)
+                    .wrap(Wrap { trim: true })
+                    .scroll((app.scroll_offset, 0));
+                f.render_widget(paragraph, results_area);
             }
-            if let Some(obj) = result.as_object() {
-                 for (k, v) in obj {
-                     if k.starts_with("_") && k != "_time" && k != "_raw" { continue; }
-                     let val_str = if let Some(s) = v.as_str() { s.to_string() } else { v.to_string() };
-                     content.push(Line::from(vec![
-                         Span::styled(format!("{}: ", k), Style::default().fg(app.theme.summary_highlight)),
-                         Span::styled(val_str, Style::default().fg(app.theme.text)),
-                     ]));
-                 }
-            } else {
-                 content.push(Line::from(format!("{:?}", result)));
+            ViewMode::Table => {
+                // Determine active pane border color
+                let table_border_style = if let ViewFocus::ContentList = app.view_focus {
+                    Style::default().fg(app.theme.active_label)
+                } else {
+                    Style::default().fg(app.theme.border)
+                };
+                let detail_border_style = if let ViewFocus::ContentDetail = app.view_focus {
+                    Style::default().fg(app.theme.active_label)
+                } else {
+                    Style::default().fg(app.theme.border)
+                };
+
+                let chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                    .split(results_area);
+
+                // --- Left Pane: Table ---
+                // "Time Sourcetype Host Message should not have a highlighted background. Instead, underline the table headers."
+                // "In the Table View: Don't show Hosts."
+                let header = Row::new(vec!["Time", "Sourcetype", "Message"])
+                    .style(Style::default().fg(app.theme.title_secondary).add_modifier(Modifier::UNDERLINED))
+                    .bottom_margin(1);
+
+                let rows: Vec<Row> = app.search_results.iter().map(|item| {
+                    let time = item.get("_time").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let sourcetype = item.get("sourcetype").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    // Host removed
+                    let msg = item.get("_raw").and_then(|v| v.as_str()).unwrap_or("").lines().next().unwrap_or("").to_string();
+
+                    Row::new(vec![time, sourcetype, msg])
+                        .style(Style::default().fg(app.theme.text))
+                }).collect();
+
+                // NOTE: The `block` variable defined outside is used for the container border.
+                // We render it first to set the boundary.
+                f.render_widget(block.clone(), results_area);
+
+                let inner_area = block.inner(results_area);
+                let inner_chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                    .split(inner_area);
+
+                // --- Left Pane: Table ---
+                let table = Table::new(rows, [
+                        Constraint::Length(24), // Time
+                        Constraint::Length(20), // Sourcetype
+                        Constraint::Min(20),    // Message (Host removed)
+                    ])
+                    .header(header)
+                    .row_highlight_style(Style::default().bg(app.theme.summary_highlight).fg(Color::White))
+                    .highlight_symbol(">> ");
+
+                // Render table directly into chunk, but we need to handle borders if we want distinct colors.
+                // Since we render the outer block, inner widgets shouldn't necessarily have borders unless we want to override the middle separator?
+                // The prompt asked: "When moving from the table panel to the details panel, can we use color line to indicate the active section."
+                // We can wrap the Table in a Block with a colored border (Right side?).
+                // Detail pane has Left side border.
+                // Let's re-add blocks to inner widgets to control border color.
+
+                // Use Right border for Table (left pane). Detail pane (right pane) has no left border.
+                let table_block = Block::default()
+                    .borders(Borders::RIGHT)
+                    .border_style(table_border_style);
+
+                f.render_stateful_widget(table.block(table_block), inner_chunks[0], &mut app.table_state);
+
+                // --- Right Pane: Detail ---
+                let selected_idx = app.table_state.selected().unwrap_or(0);
+                let detail_text = if let Some(item) = app.search_results.get(selected_idx) {
+                    serde_json::to_string_pretty(item).unwrap_or_default()
+                } else {
+                    "Select an event...".to_string()
+                };
+
+                 // Right Pane: Detail
+                let detail_paragraph = Paragraph::new(detail_text)
+                    .block(Block::default()
+                        .borders(Borders::NONE) // Remove left border to avoid double
+                        .border_style(detail_border_style)
+                        .padding(Padding::new(1, 0, 0, 0)))
+                    .wrap(Wrap { trim: false })
+                    .scroll((app.detail_scroll, 0))
+                    .style(Style::default().fg(app.theme.text));
+                f.render_widget(detail_paragraph, inner_chunks[1]);
             }
         }
-        let paragraph = Paragraph::new(content)
-            .block(block)
-            .wrap(Wrap { trim: true })
-            .scroll((app.scroll_offset, 0));
-        f.render_widget(paragraph, results_area);
     }
 
-    // --- Footer ---
+    // --- Footer (Navigation) ---
+    // "Remove the ' Navigation' and the line its on."
+    // "At the bottom of the Search Results, there should just be one line, listing our navigation hints."
+    // "Lets center it."
+    // "lets remove ' ^J NewLine' from the nav bar."
+    // "Remove the status line at the bottom"
+
     let mut footer_spans = vec![
         Span::styled(" e ", Style::default().fg(app.theme.title_main)),
         Span::styled("Search  |  ", Style::default().fg(app.theme.text)),
@@ -1079,12 +1345,11 @@ fn ui(f: &mut Frame, app: &mut App) {
     footer_spans.extend(vec![
         Span::styled(" ↑/↓ ", Style::default().fg(app.theme.title_main)),
         Span::styled("Scroll  |  ", Style::default().fg(app.theme.text)),
+        Span::styled(" ^V ", Style::default().fg(app.theme.title_main)),
+        Span::styled("View Mode  |  ", Style::default().fg(app.theme.text)),
         Span::styled(" ^X ", Style::default().fg(app.theme.title_main)),
         Span::styled("Open in Editor  |  ", Style::default().fg(app.theme.text)),
-        Span::styled(" ^L ", Style::default().fg(app.theme.title_main)),
-        Span::styled("Clear  |  ", Style::default().fg(app.theme.text)),
-        Span::styled(" ^J ", Style::default().fg(app.theme.title_main)),
-        Span::styled("NewLine  |  ", Style::default().fg(app.theme.text)),
+        // Removed ^J NewLine
         Span::styled(" ^S ", Style::default().fg(app.theme.title_main)),
         Span::styled("Load  |  ", Style::default().fg(app.theme.text)),
         Span::styled(" ^W ", Style::default().fg(app.theme.title_main)),
@@ -1093,20 +1358,11 @@ fn ui(f: &mut Frame, app: &mut App) {
         Span::styled("Quit", Style::default().fg(app.theme.text)),
     ]);
 
-    let footer_text = vec![
-        Line::from(footer_spans),
-        Line::from(Span::styled(app.status_message.clone(), Style::default().fg(app.theme.text))),
-    ];
-    let footer = Paragraph::new(footer_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title("Navigation")
-                .border_style(Style::default().fg(app.theme.border))
-                .padding(Padding::horizontal(4)),
-        );
-    f.render_widget(footer, chunks[2]);
+    let footer = Paragraph::new(Line::from(footer_spans))
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(app.theme.text));
+
+    f.render_widget(footer, chunks[3]);
 
     // --- Modals ---
     if let InputMode::SaveSearch = app.input_mode {

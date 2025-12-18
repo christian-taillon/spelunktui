@@ -151,6 +151,7 @@ pub enum ViewFocus {
 pub struct App {
     input: String,
     input_scroll: u16,
+    input_scroll_x: u16,
     input_mode: InputMode,
     client: Arc<SplunkClient>,
     status_message: String,
@@ -204,6 +205,7 @@ impl App {
         App {
             input: String::new(),
             input_scroll: 0,
+            input_scroll_x: 0,
             input_mode: InputMode::Normal,
             local_search_query: String::new(),
             search_matches: Vec::new(),
@@ -1268,15 +1270,7 @@ fn render_yaml_detail(syntax_set: &SyntaxSet, theme: &Theme, value: &Value) -> r
 }
 
 fn ui(f: &mut Frame, app: &mut App) {
-    // Determine dynamic input height
-    let input_lines = app.input.lines().count().max(1) as u16;
-    let max_height = f.area().height / 2;
-    let desired_input_height = input_lines + 2;
-    let actual_input_height = desired_input_height.min(max_height);
-    // Header height is just the input height now, but user requested fixed 2 lines box (height ~3 or 4)
-    // "Spl Search should be default be two lines box" -> borders + 1 line? or borders + 2 lines?
-    // Let's assume height 3 (Border, Content, Border).
-    let header_height = 3;
+    let header_height = 3; // Fixed height as requested (3 rows: Border, Content, Border)
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -1306,18 +1300,36 @@ fn ui(f: &mut Frame, app: &mut App) {
         _ => Style::default().fg(app.theme.text),
     };
 
-    let input_display_height = actual_input_height.saturating_sub(2);
-    let mut input_scroll = 0;
+    // Input Area calculations
+    let input_area_width = header_chunks[0].width.saturating_sub(2); // Minus borders
+    let input_display_height = header_height.saturating_sub(2); // 1 line visible
 
     // Auto-scroll logic: Ensure cursor is visible
     let cursor_byte_idx = app.cursor_position;
     let text_before = &app.input[..cursor_byte_idx.min(app.input.len())];
     let cursor_line_idx = text_before.matches('\n').count() as u16;
 
-    if cursor_line_idx >= input_display_height {
-        input_scroll = cursor_line_idx - input_display_height + 1;
+    // Calculate cursor column (visual width check)
+    let last_nl_idx = text_before.rfind('\n');
+    let cursor_col_idx = if let Some(nl) = last_nl_idx {
+        cursor_byte_idx - (nl + 1)
+    } else {
+        cursor_byte_idx
+    } as u16;
+
+    // Vertical Scroll
+    if cursor_line_idx >= app.input_scroll + input_display_height {
+        app.input_scroll = cursor_line_idx - input_display_height + 1;
+    } else if cursor_line_idx < app.input_scroll {
+        app.input_scroll = cursor_line_idx;
     }
-    app.input_scroll = input_scroll;
+
+    // Horizontal Scroll
+    if cursor_col_idx >= app.input_scroll_x + input_area_width {
+        app.input_scroll_x = cursor_col_idx - input_area_width + 1;
+    } else if cursor_col_idx < app.input_scroll_x {
+        app.input_scroll_x = cursor_col_idx;
+    }
 
     let title = if let Some(name) = &app.current_saved_search_name {
         format!("SPL Search [{}]", name)
@@ -1333,9 +1345,9 @@ fn ui(f: &mut Frame, app: &mut App) {
                 .border_type(BorderType::Rounded)
                 .title(title)
                 .border_style(Style::default().fg(app.theme.title_main))
-                .padding(Padding::horizontal(1)),
+                .padding(Padding::horizontal(0)), // Remove padding to simplify scroll math
         )
-        .scroll((input_scroll, 0));
+        .scroll((app.input_scroll, app.input_scroll_x)); // Use both scroll offsets
     f.render_widget(input, header_chunks[0]);
 
     // 2. Sparkline
@@ -1670,26 +1682,15 @@ fn ui(f: &mut Frame, app: &mut App) {
 
     // Set cursor
     if let InputMode::Editing = app.input_mode {
-        // Calculate visual cursor position from byte index
-        // We found cursor_line_idx and col earlier implicitly
-        let cursor_byte_idx = app.cursor_position;
-        let text_before = &app.input[..cursor_byte_idx.min(app.input.len())];
-        let last_nl_idx = text_before.rfind('\n');
-        let col = if let Some(nl) = last_nl_idx {
-            cursor_byte_idx - (nl + 1)
-        } else {
-            cursor_byte_idx
-        };
-
         // displayed_y = cursor_line_idx - app.input_scroll
-        let cursor_line_idx = text_before.matches('\n').count() as u16;
         let displayed_y = cursor_line_idx.saturating_sub(app.input_scroll);
+        let displayed_x = cursor_col_idx.saturating_sub(app.input_scroll_x);
 
         // Ensure cursor is within displayed area
-        if displayed_y < input_display_height {
+        if displayed_y < input_display_height && displayed_x < input_area_width {
              f.set_cursor_position(ratatui::layout::Position::new(
-                header_chunks[0].x + 1 + 1 + col as u16,
-                header_chunks[0].y + 1 + displayed_y,
+                header_chunks[0].x + 1 + displayed_x, // +1 for border
+                header_chunks[0].y + 1 + displayed_y, // +1 for border
             ));
         }
     } else if let InputMode::SaveSearch = app.input_mode {

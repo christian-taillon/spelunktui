@@ -877,7 +877,7 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                                             let next = match app_guard.table_state.selected() {
                                                  Some(i) => {
                                                      if i >= app_guard.search_results.len().saturating_sub(1) {
-                                                         0
+                                                         i // Stop at bottom (no wrap)
                                                      } else {
                                                          i + 1
                                                      }
@@ -906,7 +906,7 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                                              let prev = match app_guard.table_state.selected() {
                                                  Some(i) => {
                                                      if i == 0 {
-                                                         app_guard.search_results.len().saturating_sub(1)
+                                                         0 // Stop at top (no wrap)
                                                      } else {
                                                          i - 1
                                                      }
@@ -934,6 +934,33 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
 
                          if is_inside(app_guard.search_area, col, row) {
                              app_guard.view_focus = ViewFocus::Search;
+                             app_guard.input_mode = InputMode::Editing;
+
+                             // Calculate cursor position from mouse click
+                             let rel_x = col.saturating_sub(app_guard.search_area.x + 1); // +1 for border
+                             let rel_y = row.saturating_sub(app_guard.search_area.y + 1); // +1 for border
+
+                             let target_line_idx = (rel_y + app_guard.input_scroll) as usize;
+                             let target_col_idx = (rel_x + app_guard.input_scroll_x) as usize;
+
+                             let lines: Vec<&str> = app_guard.input.lines().collect();
+                             if target_line_idx < lines.len() {
+                                 let line = lines[target_line_idx];
+                                 // Calculate byte offset up to this line
+                                 let mut offset = 0;
+                                 for i in 0..target_line_idx {
+                                     offset += lines[i].len() + 1; // +1 for newline
+                                 }
+
+                                 // Add column offset (clamped to line length)
+                                 let col_bytes = line.chars().take(target_col_idx).map(|c| c.len_utf8()).sum::<usize>();
+                                 offset += col_bytes.min(line.len());
+
+                                 app_guard.cursor_position = offset;
+                             } else if !lines.is_empty() {
+                                 // Clicked below text, move to end
+                                 app_guard.cursor_position = app_guard.input.len();
+                             }
                          } else if is_inside(app_guard.main_area, col, row) {
                              app_guard.view_focus = ViewFocus::ContentList;
                          } else if is_inside(app_guard.detail_area, col, row) {
@@ -1063,7 +1090,7 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                                                  let next = match app_guard.table_state.selected() {
                                                      Some(i) => {
                                                          if i >= app_guard.search_results.len().saturating_sub(1) {
-                                                             0
+                                                             i // No wrap
                                                          } else {
                                                              i + 1
                                                          }
@@ -1094,7 +1121,7 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                                              let prev = match app_guard.table_state.selected() {
                                                  Some(i) => {
                                                      if i == 0 {
-                                                         app_guard.search_results.len().saturating_sub(1)
+                                                         0 // No wrap
                                                      } else {
                                                          i - 1
 

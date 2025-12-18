@@ -2,10 +2,10 @@ mod api;
 mod models;
 mod tui;
 mod config;
+mod utils;
 
 use simplelog::*;
 use std::fs::File;
-use crate::config::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

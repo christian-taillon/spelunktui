@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Alignment, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Padding, BorderType, Wrap, List, ListItem, ListState, Table, Row, Cell, TableState},
+    widgets::{Block, Borders, Paragraph, Padding, BorderType, Wrap, List, ListItem, ListState, Table, Row, Cell, TableState, Sparkline},
     Frame, Terminal,
 };
 use std::{error::Error, io, sync::Arc};
@@ -22,6 +22,7 @@ use crate::models::splunk::JobStatus;
 use crate::utils::saved_searches::SavedSearchManager;
 use serde_json::Value;
 use log::{info, error};
+use chrono;
 
 #[derive(Clone, Copy)]
 pub enum ThemeVariant {
@@ -133,6 +134,12 @@ pub enum ViewMode {
     Table,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ViewFocus {
+    Table,
+    Detail,
+}
+
 pub struct App {
     input: String,
     input_scroll: u16,
@@ -143,7 +150,9 @@ pub struct App {
 
     // View Mode
     pub view_mode: ViewMode,
+    pub view_focus: ViewFocus,
     pub table_state: TableState,
+    pub detail_scroll: u16,
 
     // Search State
     current_job_sid: Option<String>,
@@ -182,7 +191,9 @@ impl App {
             status_message: String::from("Press 'q' to quit, 'e' to enter search mode, 't' to toggle theme."),
             theme: AppTheme::default_theme(),
             view_mode: ViewMode::RawEvents,
+            view_focus: ViewFocus::Table,
             table_state: TableState::default(),
+            detail_scroll: 0,
             current_job_sid: None,
             current_job_status: None,
             search_results: Vec::new(),
@@ -740,7 +751,7 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                              app_guard.initiate_save_search();
                         }
 
-                        KeyCode::Char('m') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        KeyCode::Char('m') => {
                             app_guard.view_mode = match app_guard.view_mode {
                                 ViewMode::RawEvents => ViewMode::Table,
                                 ViewMode::Table => ViewMode::RawEvents,
@@ -748,42 +759,67 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                             app_guard.status_message = format!("Switched to {:?} mode.", app_guard.view_mode);
                         }
 
-                        KeyCode::Down | KeyCode::Char('j') => {
+                        KeyCode::Left | KeyCode::Char('h') => {
+                            app_guard.view_focus = ViewFocus::Table;
+                        }
+
+                        KeyCode::Right | KeyCode::Char('l') if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                             app_guard.view_focus = ViewFocus::Detail;
+                        }
+
+                        KeyCode::Down | KeyCode::Char('j') if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                              match app_guard.view_mode {
                                  ViewMode::RawEvents => app_guard.scroll_down(),
                                  ViewMode::Table => {
-                                     let next = match app_guard.table_state.selected() {
-                                         Some(i) => {
-                                             if i >= app_guard.search_results.len().saturating_sub(1) {
-                                                 0
-                                             } else {
-                                                 i + 1
+                                     match app_guard.view_focus {
+                                         ViewFocus::Table => {
+                                             let next = match app_guard.table_state.selected() {
+                                                 Some(i) => {
+                                                     if i >= app_guard.search_results.len().saturating_sub(1) {
+                                                         0
+                                                     } else {
+                                                         i + 1
+                                                     }
+                                                 }
+                                                 None => 0,
+                                             };
+                                             if !app_guard.search_results.is_empty() {
+                                                 app_guard.table_state.select(Some(next));
+                                                 app_guard.detail_scroll = 0; // Reset detail scroll on row change
                                              }
                                          }
-                                         None => 0,
-                                     };
-                                     if !app_guard.search_results.is_empty() {
-                                         app_guard.table_state.select(Some(next));
+                                         ViewFocus::Detail => {
+                                             app_guard.detail_scroll = app_guard.detail_scroll.saturating_add(1);
+                                         }
                                      }
                                  }
                              }
                         }
-                        KeyCode::Up | KeyCode::Char('k') => {
+                        KeyCode::Up | KeyCode::Char('k') if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                              match app_guard.view_mode {
                                  ViewMode::RawEvents => app_guard.scroll_up(),
                                  ViewMode::Table => {
-                                     let prev = match app_guard.table_state.selected() {
-                                         Some(i) => {
-                                             if i == 0 {
-                                                 app_guard.search_results.len().saturating_sub(1)
-                                             } else {
-                                                 i - 1
+                                     match app_guard.view_focus {
+                                         ViewFocus::Table => {
+                                             let prev = match app_guard.table_state.selected() {
+                                                 Some(i) => {
+                                                     if i == 0 {
+                                                         app_guard.search_results.len().saturating_sub(1)
+                                                     } else {
+                                                         i - 1
+
+                                                     }
+                                                 }
+                                                 None => 0,
+                                             };
+                                             if !app_guard.search_results.is_empty() {
+                                                 app_guard.table_state.select(Some(prev));
+                                                 app_guard.detail_scroll = 0;
                                              }
                                          }
-                                         None => 0,
-                                     };
-                                     if !app_guard.search_results.is_empty() {
-                                         app_guard.table_state.select(Some(prev));
+                                         ViewFocus::Detail => {
+                                             app_guard.detail_scroll = app_guard.detail_scroll.saturating_sub(1);
+                                         }
                                      }
                                  }
                              }
@@ -973,17 +1009,22 @@ fn ui(f: &mut Frame, app: &mut App) {
         .margin(1)
         .constraints(
             [
-                Constraint::Length(header_height), // Search Bar
-                Constraint::Min(10),   // Content
-                Constraint::Length(6), // Footer (Job Status + Navigation)
+                Constraint::Length(header_height), // Header: Search + Sparkline
+                Constraint::Length(3),             // Job Status
+                Constraint::Min(10),               // Content
+                Constraint::Length(3),             // Footer (Navigation)
             ]
             .as_ref(),
         )
         .split(f.area());
 
-    // --- Header (Search Input) ---
-    // We render the input directly into chunks[0]
+    // --- Header ---
+    let header_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
+        .split(chunks[0]);
 
+    // 1. Search Input
     let input_style = match app.input_mode {
         InputMode::Normal => Style::default().fg(app.theme.text),
         InputMode::Editing => Style::default().fg(app.theme.input_edit),
@@ -994,7 +1035,6 @@ fn ui(f: &mut Frame, app: &mut App) {
     let mut input_scroll = 0;
 
     // Auto-scroll logic: Ensure cursor is visible
-    // We need to know which line the cursor is on.
     let cursor_byte_idx = app.cursor_position;
     let text_before = &app.input[..cursor_byte_idx.min(app.input.len())];
     let cursor_line_idx = text_before.matches('\n').count() as u16;
@@ -1021,11 +1061,107 @@ fn ui(f: &mut Frame, app: &mut App) {
                 .padding(Padding::horizontal(1)),
         )
         .scroll((input_scroll, 0));
-    f.render_widget(input, chunks[0]);
+    f.render_widget(input, header_chunks[0]);
+
+    // 2. Sparkline
+    let mut spark_data = vec![];
+    if !app.search_results.is_empty() {
+        // Simple bucketing of time
+        // Note: parsing _time string requires chrono
+        // format: 2023-10-27T10:00:00.000+00:00
+        let timestamps: Vec<i64> = app.search_results.iter().filter_map(|v| {
+            v.get("_time").and_then(|t| t.as_str()).and_then(|s| {
+                chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.timestamp())
+            })
+        }).collect();
+
+        if !timestamps.is_empty() {
+            let min = *timestamps.iter().min().unwrap_or(&0);
+            let max = *timestamps.iter().max().unwrap_or(&0);
+            if max > min {
+                let range = max - min;
+                let buckets = 40; // Approx width
+                let mut counts = vec![0u64; buckets];
+                for t in timestamps {
+                    let idx = ((t - min) as f64 / range as f64 * (buckets - 1) as f64) as usize;
+                    if idx < buckets {
+                        counts[idx] += 1;
+                    }
+                }
+                spark_data = counts;
+            }
+        }
+    }
+
+    let sparkline = Sparkline::default()
+        .block(Block::default().title("Activity").borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)))
+        .data(&spark_data)
+        .style(Style::default().fg(app.theme.summary_highlight));
+    f.render_widget(sparkline, header_chunks[1]);
 
 
-    // --- Results (Middle) ---
-    let results_area = chunks[1];
+    // --- Job Status (Middle 1) ---
+    let mut stats_text = vec![];
+
+    // Elapsed Time calculation
+    let elapsed_text = if let Some(status) = &app.current_job_status {
+        if status.is_done {
+            String::new() // Don't show elapsed if done, rely on "Time" field
+        } else if let Some(start_time) = app.job_created_at {
+             let elapsed = start_time.elapsed().as_secs();
+             format!("(Elapsed: {}s) ", elapsed)
+        } else {
+            String::new()
+        }
+    } else if let Some(start_time) = app.job_created_at {
+         let elapsed = start_time.elapsed().as_secs();
+         format!("(Elapsed: {}s) ", elapsed)
+    } else {
+        String::new()
+    };
+
+    if let Some(status) = &app.current_job_status {
+        stats_text.push(Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(app.theme.title_secondary)),
+            Span::styled(format!("{} {} ", if status.is_done { "Done" } else { "Running" }, elapsed_text), Style::default().fg(app.theme.text)),
+            Span::styled(" | Count: ", Style::default().fg(app.theme.title_secondary)),
+            Span::styled(format!("{} ", status.result_count), Style::default().fg(app.theme.text)),
+            Span::styled(" | Time: ", Style::default().fg(app.theme.title_secondary)),
+            Span::styled(format!("{:.2}s ", status.run_duration), Style::default().fg(app.theme.text)),
+            // State removed as requested
+        ]));
+
+        if let Some(sid) = &app.current_job_sid {
+            let url = app.client.get_shareable_url(sid);
+            stats_text.push(Line::from(vec![
+                Span::styled("URL: ", Style::default().fg(app.theme.title_secondary)),
+                Span::styled(url, Style::default().fg(app.theme.summary_highlight)),
+            ]));
+        }
+    } else if let Some(sid) = &app.current_job_sid {
+        // Job created but status not yet fetched
+        stats_text.push(Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(app.theme.title_secondary)),
+            Span::styled(format!("Running {} ", elapsed_text), Style::default().fg(app.theme.text)),
+            Span::styled(format!("(SID: {})", sid), Style::default().fg(app.theme.title_secondary)),
+        ]));
+    } else {
+        stats_text.push(Line::from("No active job."));
+    }
+
+    let stats_paragraph = Paragraph::new(stats_text)
+        .block(
+            Block::default()
+                .title("Job Status")
+                .border_style(Style::default().fg(app.theme.title_main))
+                .padding(Padding::horizontal(4)),
+        )
+        .style(Style::default().fg(app.theme.text));
+    f.render_widget(stats_paragraph, chunks[1]);
+
+
+    // --- Results (Middle 2) ---
+    let results_area = chunks[2];
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -1127,72 +1263,14 @@ fn ui(f: &mut Frame, app: &mut App) {
                         .border_style(Style::default().fg(app.theme.border))
                         .padding(Padding::new(1, 0, 0, 0)))
                     .wrap(Wrap { trim: false })
+                    .scroll((app.detail_scroll, 0))
                     .style(Style::default().fg(app.theme.text));
                 f.render_widget(detail_paragraph, inner_chunks[1]);
             }
         }
     }
 
-    // --- Bottom Bar (Job Status + Navigation) ---
-    // We split chunks[2] into JobStatus (top) and Navigation (bottom)
-    let bottom_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Length(3)])
-        .split(chunks[2]);
-
-    // 1. Job Status
-    let mut stats_text = vec![];
-
-    // Elapsed Time calculation
-    let elapsed_text = if let Some(start_time) = app.job_created_at {
-        let elapsed = start_time.elapsed().as_secs();
-        format!("(Elapsed: {}s) ", elapsed)
-    } else {
-        String::new()
-    };
-
-    if let Some(status) = &app.current_job_status {
-        stats_text.push(Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(app.theme.title_secondary)),
-            Span::styled(format!("{} {} ", if status.is_done { "Done" } else { "Running" }, elapsed_text), Style::default().fg(app.theme.text)),
-            Span::styled(" | Count: ", Style::default().fg(app.theme.title_secondary)),
-            Span::styled(format!("{} ", status.result_count), Style::default().fg(app.theme.text)),
-            Span::styled(" | Time: ", Style::default().fg(app.theme.title_secondary)),
-            Span::styled(format!("{:.2}s ", status.run_duration), Style::default().fg(app.theme.text)),
-            Span::styled(" | State: ", Style::default().fg(app.theme.title_secondary)),
-            Span::styled(format!("{}", status.dispatch_state), Style::default().fg(app.theme.text)),
-        ]));
-
-        if let Some(sid) = &app.current_job_sid {
-            let url = app.client.get_shareable_url(sid);
-            stats_text.push(Line::from(vec![
-                Span::styled("URL: ", Style::default().fg(app.theme.title_secondary)),
-                Span::styled(url, Style::default().fg(app.theme.summary_highlight)),
-            ]));
-        }
-    } else if let Some(sid) = &app.current_job_sid {
-        // Job created but status not yet fetched
-        stats_text.push(Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(app.theme.title_secondary)),
-            Span::styled(format!("Running {} ", elapsed_text), Style::default().fg(app.theme.text)),
-            Span::styled(format!("(SID: {})", sid), Style::default().fg(app.theme.title_secondary)),
-        ]));
-    } else {
-        stats_text.push(Line::from("No active job."));
-    }
-
-    let stats_paragraph = Paragraph::new(stats_text)
-        .block(
-            Block::default()
-                .title("Job Status")
-                .border_style(Style::default().fg(app.theme.title_main))
-                .padding(Padding::horizontal(4)),
-        )
-        .style(Style::default().fg(app.theme.text));
-
-    f.render_widget(stats_paragraph, bottom_chunks[0]);
-
-    // 2. Navigation
+    // --- Footer (Navigation) ---
     let mut footer_spans = vec![
         Span::styled(" e ", Style::default().fg(app.theme.title_main)),
         Span::styled("Search  |  ", Style::default().fg(app.theme.text)),
@@ -1206,12 +1284,10 @@ fn ui(f: &mut Frame, app: &mut App) {
     footer_spans.extend(vec![
         Span::styled(" ↑/↓ ", Style::default().fg(app.theme.title_main)),
         Span::styled("Scroll  |  ", Style::default().fg(app.theme.text)),
-        Span::styled(" ^M ", Style::default().fg(app.theme.title_main)),
+        Span::styled(" m ", Style::default().fg(app.theme.title_main)),
         Span::styled("View Mode  |  ", Style::default().fg(app.theme.text)),
         Span::styled(" ^X ", Style::default().fg(app.theme.title_main)),
         Span::styled("Open in Editor  |  ", Style::default().fg(app.theme.text)),
-        Span::styled(" ^L ", Style::default().fg(app.theme.title_main)),
-        Span::styled("Clear  |  ", Style::default().fg(app.theme.text)),
         Span::styled(" ^J ", Style::default().fg(app.theme.title_main)),
         Span::styled("NewLine  |  ", Style::default().fg(app.theme.text)),
         Span::styled(" ^S ", Style::default().fg(app.theme.title_main)),
@@ -1235,7 +1311,7 @@ fn ui(f: &mut Frame, app: &mut App) {
                 .border_style(Style::default().fg(app.theme.border))
                 .padding(Padding::horizontal(4)),
         );
-    f.render_widget(footer, bottom_chunks[1]);
+    f.render_widget(footer, chunks[3]);
 
     // --- Modals ---
     if let InputMode::SaveSearch = app.input_mode {
@@ -1304,8 +1380,8 @@ fn ui(f: &mut Frame, app: &mut App) {
         // Ensure cursor is within displayed area
         if displayed_y < input_display_height {
              f.set_cursor_position(ratatui::layout::Position::new(
-                chunks[0].x + 1 + 1 + col as u16,
-                chunks[0].y + 1 + displayed_y,
+                header_chunks[0].x + 1 + 1 + col as u16,
+                header_chunks[0].y + 1 + displayed_y,
             ));
         }
     } else if let InputMode::SaveSearch = app.input_mode {

@@ -23,6 +23,12 @@ use crate::utils::saved_searches::SavedSearchManager;
 use serde_json::Value;
 use log::{info, error};
 use chrono;
+use syntect::{
+    highlighting::{Theme, ThemeSet},
+    parsing::SyntaxSet,
+    easy::HighlightLines,
+};
+use tui_syntax_highlight::Highlighter;
 
 #[derive(Clone, Copy)]
 pub enum ThemeVariant {
@@ -114,6 +120,7 @@ enum InputMode {
     SaveSearch,
     LoadSearch,
     ConfirmOverwrite,
+    LocalSearch,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -162,6 +169,15 @@ pub struct App {
     results_fetched: bool,
     scroll_offset: u16,
 
+    // Local Search
+    local_search_query: String,
+    search_matches: Vec<usize>,
+    current_match_index: Option<usize>,
+
+    // Syntax Highlighting
+    syntax_set: SyntaxSet,
+    syntax_theme: Theme,
+
     // Status polling
     is_status_fetching: bool,
 
@@ -188,6 +204,11 @@ impl App {
             input: String::new(),
             input_scroll: 0,
             input_mode: InputMode::Normal,
+            local_search_query: String::new(),
+            search_matches: Vec::new(),
+            current_match_index: None,
+            syntax_set: SyntaxSet::load_defaults_newlines(),
+            syntax_theme: ThemeSet::load_defaults().themes["base16-ocean.dark"].clone(),
             client,
             status_message: String::from("Press 'q' to quit, 'e' to enter search mode, 't' to toggle theme."),
             theme: AppTheme::default_theme(),
@@ -210,6 +231,81 @@ impl App {
             cursor_position: 0,
             editor_file_path: None,
             job_created_at: None,
+        }
+    }
+
+    fn perform_local_search(&mut self) {
+        if self.local_search_query.trim().is_empty() {
+             return;
+        }
+
+        self.search_matches.clear();
+        self.current_match_index = None;
+
+        let pattern = match regex::RegexBuilder::new(&self.local_search_query)
+            .case_insensitive(true)
+            .build() {
+            Ok(re) => re,
+            Err(e) => {
+                 self.status_message = format!("Invalid Regex: {}", e);
+                 return;
+            }
+        };
+
+        for (i, result) in self.search_results.iter().enumerate() {
+            // Search in _raw or full JSON dump
+            let text = result.get("_raw").and_then(|v| v.as_str()).unwrap_or("");
+            if pattern.is_match(text) {
+                self.search_matches.push(i);
+            }
+        }
+
+        if self.search_matches.is_empty() {
+            self.status_message = format!("No matches found for '{}'", self.local_search_query);
+        } else {
+             self.current_match_index = Some(0);
+             self.jump_to_match(0);
+             self.status_message = format!("Found {} matches. (1/{})", self.search_matches.len(), self.search_matches.len());
+        }
+    }
+
+    fn next_match(&mut self) {
+        if let Some(curr) = self.current_match_index {
+            let next = if curr + 1 >= self.search_matches.len() {
+                0
+            } else {
+                curr + 1
+            };
+            self.current_match_index = Some(next);
+            self.jump_to_match(next);
+            self.status_message = format!("Match {}/{}", next + 1, self.search_matches.len());
+        }
+    }
+
+    fn prev_match(&mut self) {
+        if let Some(curr) = self.current_match_index {
+            let prev = if curr == 0 {
+                self.search_matches.len() - 1
+            } else {
+                curr - 1
+            };
+            self.current_match_index = Some(prev);
+            self.jump_to_match(prev);
+            self.status_message = format!("Match {}/{}", prev + 1, self.search_matches.len());
+        }
+    }
+
+    fn jump_to_match(&mut self, match_index: usize) {
+        if let Some(row_index) = self.search_matches.get(match_index) {
+            match self.view_mode {
+                ViewMode::RawEvents => {
+                    self.scroll_offset = *row_index as u16;
+                }
+                ViewMode::Table => {
+                    self.table_state.select(Some(*row_index));
+                    self.detail_scroll = 0;
+                }
+            }
         }
     }
 
@@ -752,12 +848,28 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                              app_guard.initiate_save_search();
                         }
 
-                        KeyCode::Char('v') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        // Toggle View Mode (Ctrl+v OR Ctrl+m)
+                        KeyCode::Char('v') | KeyCode::Char('m') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                             app_guard.view_mode = match app_guard.view_mode {
                                 ViewMode::RawEvents => ViewMode::Table,
                                 ViewMode::Table => ViewMode::RawEvents,
                             };
                             app_guard.status_message = format!("Switched to {:?} mode.", app_guard.view_mode);
+                        }
+
+                        // Local Search Trigger
+                        KeyCode::Char('/') => {
+                            app_guard.input_mode = InputMode::LocalSearch;
+                            app_guard.local_search_query.clear();
+                            app_guard.status_message = String::from("Enter regex search query...");
+                        }
+
+                        // Local Search Navigation
+                        KeyCode::Char('n') => {
+                            app_guard.next_match();
+                        }
+                        KeyCode::Char('N') => {
+                            app_guard.prev_match();
                         }
 
                         KeyCode::Tab => {
@@ -1021,10 +1133,45 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                         }
                         _ => {}
                     },
+                    InputMode::LocalSearch => match key.code {
+                        KeyCode::Enter => {
+                            app_guard.perform_local_search();
+                            app_guard.input_mode = InputMode::Normal;
+                        }
+                        KeyCode::Char(c) => {
+                            app_guard.local_search_query.push(c);
+                        }
+                        KeyCode::Backspace => {
+                            app_guard.local_search_query.pop();
+                        }
+                        KeyCode::Esc => {
+                            app_guard.input_mode = InputMode::Normal;
+                            app_guard.status_message = String::from("Local search cancelled.");
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
     }
+}
+
+fn render_yaml_detail(syntax_set: &SyntaxSet, theme: &Theme, value: &Value) -> ratatui::text::Text<'static> {
+    let yaml_str = serde_yaml::to_string(value).unwrap_or_else(|e| format!("Error converting to YAML: {}", e));
+
+    let syntax = syntax_set.find_syntax_by_extension("yaml").unwrap_or_else(|| syntax_set.find_syntax_plain_text());
+    let mut h = HighlightLines::new(syntax, theme);
+    let highlighter = Highlighter::new(theme.clone()); // tui-syntax-highlight 0.1.2 requirement
+
+    let mut lines = Vec::new();
+    for line in yaml_str.lines() {
+        match highlighter.highlight_line(line, &mut h, 4, Style::default(), syntax_set) {
+            Ok(l) => lines.push(l),
+            Err(_) => lines.push(Line::from(line.to_string())),
+        }
+    }
+
+    ratatui::text::Text::from(lines)
 }
 
 fn ui(f: &mut Frame, app: &mut App) {
@@ -1062,6 +1209,7 @@ fn ui(f: &mut Frame, app: &mut App) {
     let input_style = match app.input_mode {
         InputMode::Normal => Style::default().fg(app.theme.text),
         InputMode::Editing => Style::default().fg(app.theme.input_edit),
+        InputMode::LocalSearch => Style::default().fg(app.theme.input_edit),
         _ => Style::default().fg(app.theme.text),
     };
 
@@ -1305,10 +1453,12 @@ fn ui(f: &mut Frame, app: &mut App) {
 
                 // --- Right Pane: Detail ---
                 let selected_idx = app.table_state.selected().unwrap_or(0);
+
+                // Use new render_yaml_detail logic
                 let detail_text = if let Some(item) = app.search_results.get(selected_idx) {
-                    serde_json::to_string_pretty(item).unwrap_or_default()
+                    render_yaml_detail(&app.syntax_set, &app.syntax_theme, item)
                 } else {
-                    "Select an event...".to_string()
+                    ratatui::text::Text::from("Select an event...")
                 };
 
                  // Right Pane: Detail
@@ -1365,6 +1515,25 @@ fn ui(f: &mut Frame, app: &mut App) {
     f.render_widget(footer, chunks[3]);
 
     // --- Modals ---
+    if let InputMode::LocalSearch = app.input_mode {
+        let area = centered_rect(60, 10, f.area());
+        f.render_widget(ratatui::widgets::Clear, area);
+
+        let input_block = Paragraph::new(app.local_search_query.as_str())
+            .style(Style::default().fg(app.theme.input_edit))
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .title("Local Search (Regex)")
+                .border_style(Style::default().fg(app.theme.title_main)));
+        f.render_widget(input_block, area);
+
+        // Cursor for Local Search
+        f.set_cursor_position(ratatui::layout::Position::new(
+             area.x + 1 + app.local_search_query.len() as u16,
+             area.y + 1
+        ));
+    }
+
     if let InputMode::SaveSearch = app.input_mode {
         let area = centered_rect(60, 20, f.area());
         f.render_widget(ratatui::widgets::Clear, area);

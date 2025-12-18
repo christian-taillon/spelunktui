@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Alignment, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Padding, BorderType, Wrap, List, ListItem, ListState},
+    widgets::{Block, Borders, Paragraph, Padding, BorderType, Wrap, List, ListItem, ListState, Table, Row, Cell, TableState},
     Frame, Terminal,
 };
 use std::{error::Error, io, sync::Arc};
@@ -127,6 +127,12 @@ pub enum VimState {
     Insert,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ViewMode {
+    RawEvents,
+    Table,
+}
+
 pub struct App {
     input: String,
     input_scroll: u16,
@@ -134,6 +140,10 @@ pub struct App {
     client: Arc<SplunkClient>,
     status_message: String,
     pub theme: AppTheme,
+
+    // View Mode
+    pub view_mode: ViewMode,
+    pub table_state: TableState,
 
     // Search State
     current_job_sid: Option<String>,
@@ -171,6 +181,8 @@ impl App {
             client,
             status_message: String::from("Press 'q' to quit, 'e' to enter search mode, 't' to toggle theme."),
             theme: AppTheme::default_theme(),
+            view_mode: ViewMode::RawEvents,
+            table_state: TableState::default(),
             current_job_sid: None,
             current_job_status: None,
             search_results: Vec::new(),
@@ -728,11 +740,53 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                              app_guard.initiate_save_search();
                         }
 
+                        KeyCode::Char('m') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            app_guard.view_mode = match app_guard.view_mode {
+                                ViewMode::RawEvents => ViewMode::Table,
+                                ViewMode::Table => ViewMode::RawEvents,
+                            };
+                            app_guard.status_message = format!("Switched to {:?} mode.", app_guard.view_mode);
+                        }
+
                         KeyCode::Down | KeyCode::Char('j') => {
-                            app_guard.scroll_down();
+                             match app_guard.view_mode {
+                                 ViewMode::RawEvents => app_guard.scroll_down(),
+                                 ViewMode::Table => {
+                                     let next = match app_guard.table_state.selected() {
+                                         Some(i) => {
+                                             if i >= app_guard.search_results.len().saturating_sub(1) {
+                                                 0
+                                             } else {
+                                                 i + 1
+                                             }
+                                         }
+                                         None => 0,
+                                     };
+                                     if !app_guard.search_results.is_empty() {
+                                         app_guard.table_state.select(Some(next));
+                                     }
+                                 }
+                             }
                         }
                         KeyCode::Up | KeyCode::Char('k') => {
-                            app_guard.scroll_up();
+                             match app_guard.view_mode {
+                                 ViewMode::RawEvents => app_guard.scroll_up(),
+                                 ViewMode::Table => {
+                                     let prev = match app_guard.table_state.selected() {
+                                         Some(i) => {
+                                             if i == 0 {
+                                                 app_guard.search_results.len().saturating_sub(1)
+                                             } else {
+                                                 i - 1
+                                             }
+                                         }
+                                         None => 0,
+                                     };
+                                     if !app_guard.search_results.is_empty() {
+                                         app_guard.table_state.select(Some(prev));
+                                     }
+                                 }
+                             }
                         }
                         // 'x' mapping removed as requested
                         KeyCode::Enter => {
@@ -911,26 +965,24 @@ fn ui(f: &mut Frame, app: &mut App) {
     let max_height = f.area().height / 2;
     let desired_input_height = input_lines + 2;
     let actual_input_height = desired_input_height.min(max_height);
-    let header_height = actual_input_height + 3;
+    // Header height is just the input height now
+    let header_height = actual_input_height;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
         .constraints(
             [
-                Constraint::Length(header_height), // Dynamic Header
-                Constraint::Min(10),   // Results
-                Constraint::Length(3), // Footer
+                Constraint::Length(header_height), // Search Bar
+                Constraint::Min(10),   // Content
+                Constraint::Length(6), // Footer (Job Status + Navigation)
             ]
             .as_ref(),
         )
         .split(f.area());
 
-    // --- Header ---
-    let header_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(actual_input_height), Constraint::Length(3)])
-        .split(chunks[0]);
+    // --- Header (Search Input) ---
+    // We render the input directly into chunks[0]
 
     let input_style = match app.input_mode {
         InputMode::Normal => Style::default().fg(app.theme.text),
@@ -969,9 +1021,126 @@ fn ui(f: &mut Frame, app: &mut App) {
                 .padding(Padding::horizontal(1)),
         )
         .scroll((input_scroll, 0));
-    f.render_widget(input, header_chunks[0]);
+    f.render_widget(input, chunks[0]);
 
-    // Job Stats & Results logic
+
+    // --- Results (Middle) ---
+    let results_area = chunks[1];
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(match app.view_mode {
+            ViewMode::RawEvents => "Search Results (Raw)",
+            ViewMode::Table => "Search Results (Table)",
+        })
+        .border_style(Style::default().fg(app.theme.border))
+        .padding(Padding::new(2, 2, 1, 1));
+
+    if app.search_results.is_empty() {
+        let text = Paragraph::new("No results available.")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(app.theme.text))
+            .block(block);
+        f.render_widget(text, results_area);
+    } else {
+        match app.view_mode {
+            ViewMode::RawEvents => {
+                let mut content = vec![];
+                for (i, result) in app.search_results.iter().enumerate() {
+                    if i > 0 {
+                        content.push(Line::from(Span::styled("-".repeat(results_area.width as usize - 6), Style::default().fg(app.theme.border))));
+                    }
+                    if let Some(obj) = result.as_object() {
+                         for (k, v) in obj {
+                             if k.starts_with("_") && k != "_time" && k != "_raw" { continue; }
+                             let val_str = if let Some(s) = v.as_str() { s.to_string() } else { v.to_string() };
+                             content.push(Line::from(vec![
+                                 Span::styled(format!("{}: ", k), Style::default().fg(app.theme.summary_highlight)),
+                                 Span::styled(val_str, Style::default().fg(app.theme.text)),
+                             ]));
+                         }
+                    } else {
+                         content.push(Line::from(format!("{:?}", result)));
+                    }
+                }
+                let paragraph = Paragraph::new(content)
+                    .block(block)
+                    .wrap(Wrap { trim: true })
+                    .scroll((app.scroll_offset, 0));
+                f.render_widget(paragraph, results_area);
+            }
+            ViewMode::Table => {
+                let chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                    .split(results_area);
+
+                // --- Left Pane: Table ---
+                let header = Row::new(vec!["Time", "Sourcetype", "Host", "Message"])
+                    .style(Style::default().fg(app.theme.title_secondary).bg(app.theme.confidence_empty))
+                    .bottom_margin(1);
+
+                let rows: Vec<Row> = app.search_results.iter().map(|item| {
+                    let time = item.get("_time").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let sourcetype = item.get("sourcetype").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let host = item.get("host").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let msg = item.get("_raw").and_then(|v| v.as_str()).unwrap_or("").lines().next().unwrap_or("").to_string();
+
+                    Row::new(vec![time, sourcetype, host, msg])
+                        .style(Style::default().fg(app.theme.text))
+                }).collect();
+
+                // NOTE: The `block` variable defined outside is used for the container border.
+                // We render it first to set the boundary.
+                f.render_widget(block.clone(), results_area);
+
+                let inner_area = block.inner(results_area);
+                let inner_chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                    .split(inner_area);
+
+                // --- Left Pane: Table ---
+                let table = Table::new(rows, [
+                        Constraint::Length(24), // Time
+                        Constraint::Length(20), // Sourcetype
+                        Constraint::Length(20), // Host
+                        Constraint::Min(20),    // Message
+                    ])
+                    .header(header)
+                    .row_highlight_style(Style::default().bg(app.theme.summary_highlight).fg(Color::White))
+                    .highlight_symbol(">> ");
+                f.render_stateful_widget(table, inner_chunks[0], &mut app.table_state);
+
+                // --- Right Pane: Detail ---
+                let selected_idx = app.table_state.selected().unwrap_or(0);
+                let detail_text = if let Some(item) = app.search_results.get(selected_idx) {
+                    serde_json::to_string_pretty(item).unwrap_or_default()
+                } else {
+                    "Select an event...".to_string()
+                };
+
+                 // Right Pane: Detail
+                let detail_paragraph = Paragraph::new(detail_text)
+                    .block(Block::default()
+                        .borders(Borders::LEFT)
+                        .border_style(Style::default().fg(app.theme.border))
+                        .padding(Padding::new(1, 0, 0, 0)))
+                    .wrap(Wrap { trim: false })
+                    .style(Style::default().fg(app.theme.text));
+                f.render_widget(detail_paragraph, inner_chunks[1]);
+            }
+        }
+    }
+
+    // --- Bottom Bar (Job Status + Navigation) ---
+    // We split chunks[2] into JobStatus (top) and Navigation (bottom)
+    let bottom_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Length(3)])
+        .split(chunks[2]);
+
+    // 1. Job Status
     let mut stats_text = vec![];
 
     // Elapsed Time calculation
@@ -1015,57 +1184,15 @@ fn ui(f: &mut Frame, app: &mut App) {
     let stats_paragraph = Paragraph::new(stats_text)
         .block(
             Block::default()
-                // Removed borders(Borders::BOTTOM) as requested
                 .title("Job Status")
                 .border_style(Style::default().fg(app.theme.title_main))
                 .padding(Padding::horizontal(4)),
         )
         .style(Style::default().fg(app.theme.text));
 
-    f.render_widget(stats_paragraph, header_chunks[1]);
+    f.render_widget(stats_paragraph, bottom_chunks[0]);
 
-    // --- Results ---
-    let results_area = chunks[1];
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Search Results")
-        .border_style(Style::default().fg(app.theme.border))
-        .padding(Padding::new(2, 2, 1, 1));
-
-    if app.search_results.is_empty() {
-        let text = Paragraph::new("No results available.")
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(app.theme.text))
-            .block(block);
-        f.render_widget(text, results_area);
-    } else {
-        let mut content = vec![];
-        for (i, result) in app.search_results.iter().enumerate() {
-            if i > 0 {
-                content.push(Line::from(Span::styled("-".repeat(results_area.width as usize - 6), Style::default().fg(app.theme.border))));
-            }
-            if let Some(obj) = result.as_object() {
-                 for (k, v) in obj {
-                     if k.starts_with("_") && k != "_time" && k != "_raw" { continue; }
-                     let val_str = if let Some(s) = v.as_str() { s.to_string() } else { v.to_string() };
-                     content.push(Line::from(vec![
-                         Span::styled(format!("{}: ", k), Style::default().fg(app.theme.summary_highlight)),
-                         Span::styled(val_str, Style::default().fg(app.theme.text)),
-                     ]));
-                 }
-            } else {
-                 content.push(Line::from(format!("{:?}", result)));
-            }
-        }
-        let paragraph = Paragraph::new(content)
-            .block(block)
-            .wrap(Wrap { trim: true })
-            .scroll((app.scroll_offset, 0));
-        f.render_widget(paragraph, results_area);
-    }
-
-    // --- Footer ---
+    // 2. Navigation
     let mut footer_spans = vec![
         Span::styled(" e ", Style::default().fg(app.theme.title_main)),
         Span::styled("Search  |  ", Style::default().fg(app.theme.text)),
@@ -1079,6 +1206,8 @@ fn ui(f: &mut Frame, app: &mut App) {
     footer_spans.extend(vec![
         Span::styled(" ↑/↓ ", Style::default().fg(app.theme.title_main)),
         Span::styled("Scroll  |  ", Style::default().fg(app.theme.text)),
+        Span::styled(" ^M ", Style::default().fg(app.theme.title_main)),
+        Span::styled("View Mode  |  ", Style::default().fg(app.theme.text)),
         Span::styled(" ^X ", Style::default().fg(app.theme.title_main)),
         Span::styled("Open in Editor  |  ", Style::default().fg(app.theme.text)),
         Span::styled(" ^L ", Style::default().fg(app.theme.title_main)),
@@ -1100,13 +1229,13 @@ fn ui(f: &mut Frame, app: &mut App) {
     let footer = Paragraph::new(footer_text)
         .block(
             Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                // .borders(Borders::ALL) // Minimal style for bottom bar
+                // .border_type(BorderType::Rounded)
                 .title("Navigation")
                 .border_style(Style::default().fg(app.theme.border))
                 .padding(Padding::horizontal(4)),
         );
-    f.render_widget(footer, chunks[2]);
+    f.render_widget(footer, bottom_chunks[1]);
 
     // --- Modals ---
     if let InputMode::SaveSearch = app.input_mode {
@@ -1175,8 +1304,8 @@ fn ui(f: &mut Frame, app: &mut App) {
         // Ensure cursor is within displayed area
         if displayed_y < input_display_height {
              f.set_cursor_position(ratatui::layout::Position::new(
-                header_chunks[0].x + 1 + 1 + col as u16,
-                header_chunks[0].y + 1 + displayed_y,
+                chunks[0].x + 1 + 1 + col as u16,
+                chunks[0].y + 1 + displayed_y,
             ));
         }
     } else if let InputMode::SaveSearch = app.input_mode {

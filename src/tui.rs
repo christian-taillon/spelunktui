@@ -285,7 +285,7 @@ impl App {
         // Load saved theme
         if let Ok(config) = Config::load() {
             if let Some(theme_name) = config.theme {
-                app.apply_theme(&theme_name);
+                app.apply_theme(&theme_name, false);
             }
         }
         app
@@ -492,7 +492,7 @@ impl App {
         }
     }
 
-    fn apply_theme(&mut self, theme_name: &str) {
+    fn apply_theme(&mut self, theme_name: &str, save: bool) {
         self.theme = match theme_name {
             "Default" => {
                 if let Some(t) = self.theme_set.themes.get("base16-ocean.dark") {
@@ -523,7 +523,9 @@ impl App {
             _ => AppTheme::default_theme(),
         };
         self.update_detail_view();
-        let _ = Config::save_theme(theme_name);
+        if save {
+            let _ = Config::save_theme(theme_name);
+        }
     }
 
     fn toggle_theme_selector(&mut self) {
@@ -913,61 +915,73 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                 Event::Mouse(mouse_event) => {
                      match mouse_event.kind {
                          MouseEventKind::ScrollDown => {
-                             match app_guard.view_mode {
-                                 ViewMode::RawEvents => app_guard.scroll_down(),
-                                 ViewMode::Table => {
-                                     // If Table, scroll based on focus? Or just scroll table if focus is list?
-                                     // Let's implement generic focus-based scroll
-                                     match app_guard.view_focus {
-                                         ViewFocus::ContentList | ViewFocus::Search => {
-                                            // Scroll table
-                                            let next = match app_guard.table_state.selected() {
-                                                 Some(i) => {
-                                                     if i >= app_guard.search_results.len().saturating_sub(1) {
-                                                         i // Stop at bottom (no wrap)
-                                                     } else {
-                                                         i + 1
+                             if let ViewFocus::Search = app_guard.view_focus {
+                                 let line_count = app_guard.input.lines().count();
+                                 let max_scroll = line_count.saturating_sub(3); // 3 lines visible (header height 5)
+                                 if app_guard.input_scroll < max_scroll as u16 {
+                                     app_guard.input_scroll = app_guard.input_scroll.saturating_add(1);
+                                 }
+                             } else {
+                                 match app_guard.view_mode {
+                                     ViewMode::RawEvents => app_guard.scroll_down(),
+                                     ViewMode::Table => {
+                                         match app_guard.view_focus {
+                                             ViewFocus::ContentList => {
+                                                // Scroll table
+                                                let next = match app_guard.table_state.selected() {
+                                                     Some(i) => {
+                                                         if i >= app_guard.search_results.len().saturating_sub(1) {
+                                                             i // Stop at bottom (no wrap)
+                                                         } else {
+                                                             i + 1
+                                                         }
                                                      }
+                                                     None => 0,
+                                                 };
+                                                 if !app_guard.search_results.is_empty() {
+                                                     app_guard.table_state.select(Some(next));
+                                                     app_guard.detail_scroll = 0;
+                                                     app_guard.update_detail_view();
                                                  }
-                                                 None => 0,
-                                             };
-                                             if !app_guard.search_results.is_empty() {
-                                                 app_guard.table_state.select(Some(next));
-                                                 app_guard.detail_scroll = 0;
-                                                 app_guard.update_detail_view();
-                                             }
-                                         },
-                                         ViewFocus::ContentDetail => {
-                                             app_guard.detail_scroll = app_guard.detail_scroll.saturating_add(1);
+                                             },
+                                             ViewFocus::ContentDetail => {
+                                                 app_guard.detail_scroll = app_guard.detail_scroll.saturating_add(1);
+                                             },
+                                             _ => {}
                                          }
                                      }
                                  }
                              }
                          }
                          MouseEventKind::ScrollUp => {
-                             match app_guard.view_mode {
-                                 ViewMode::RawEvents => app_guard.scroll_up(),
-                                 ViewMode::Table => {
-                                     match app_guard.view_focus {
-                                         ViewFocus::ContentList | ViewFocus::Search => {
-                                             let prev = match app_guard.table_state.selected() {
-                                                 Some(i) => {
-                                                     if i == 0 {
-                                                         0 // Stop at top (no wrap)
-                                                     } else {
-                                                         i - 1
+                             if let ViewFocus::Search = app_guard.view_focus {
+                                 app_guard.input_scroll = app_guard.input_scroll.saturating_sub(1);
+                             } else {
+                                 match app_guard.view_mode {
+                                     ViewMode::RawEvents => app_guard.scroll_up(),
+                                     ViewMode::Table => {
+                                         match app_guard.view_focus {
+                                             ViewFocus::ContentList => {
+                                                 let prev = match app_guard.table_state.selected() {
+                                                     Some(i) => {
+                                                         if i == 0 {
+                                                             0 // Stop at top (no wrap)
+                                                         } else {
+                                                             i - 1
+                                                         }
                                                      }
+                                                     None => 0,
+                                                 };
+                                                 if !app_guard.search_results.is_empty() {
+                                                     app_guard.table_state.select(Some(prev));
+                                                     app_guard.detail_scroll = 0;
+                                                     app_guard.update_detail_view();
                                                  }
-                                                 None => 0,
-                                             };
-                                             if !app_guard.search_results.is_empty() {
-                                                 app_guard.table_state.select(Some(prev));
-                                                 app_guard.detail_scroll = 0;
-                                                 app_guard.update_detail_view();
-                                             }
-                                         },
-                                         ViewFocus::ContentDetail => {
-                                             app_guard.detail_scroll = app_guard.detail_scroll.saturating_sub(1);
+                                             },
+                                             ViewFocus::ContentDetail => {
+                                                 app_guard.detail_scroll = app_guard.detail_scroll.saturating_sub(1);
+                                             },
+                                             _ => {}
                                          }
                                      }
                                  }
@@ -1405,7 +1419,7 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                         KeyCode::Enter => {
                             if let Some(idx) = app_guard.theme_list_state.selected() {
                                 let theme_name = app_guard.theme_options[idx];
-                                app_guard.apply_theme(theme_name);
+                                app_guard.apply_theme(theme_name, true);
                                 app_guard.status_message = format!("Theme '{}' applied.", theme_name);
                             }
                             app_guard.input_mode = InputMode::Normal;

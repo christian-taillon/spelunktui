@@ -1,5 +1,5 @@
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseEventKind},
     cursor::SetCursorStyle,
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -177,6 +177,7 @@ pub struct App {
 
     // Syntax Highlighting
     syntax_set: SyntaxSet,
+    theme_set: ThemeSet,
     syntax_theme: Theme,
     cached_detail: ratatui::text::Text<'static>,
 
@@ -202,6 +203,9 @@ pub struct App {
 
 impl App {
     pub fn new(client: Arc<SplunkClient>) -> App {
+        let theme_set = ThemeSet::load_defaults();
+        let syntax_theme = theme_set.themes["base16-ocean.dark"].clone();
+
         App {
             input: String::new(),
             input_scroll: 0,
@@ -211,7 +215,8 @@ impl App {
             search_matches: Vec::new(),
             current_match_index: None,
             syntax_set: SyntaxSet::load_defaults_newlines(),
-            syntax_theme: ThemeSet::load_defaults().themes["base16-ocean.dark"].clone(),
+            theme_set,
+            syntax_theme,
             cached_detail: ratatui::text::Text::default(),
             client,
             status_message: String::from("Press 'q' to quit, 'e' to enter search mode, 't' to toggle theme."),
@@ -441,10 +446,31 @@ impl App {
 
     fn toggle_theme(&mut self) {
         self.theme = match self.theme.variant {
-            ThemeVariant::Default => AppTheme::color_pop(),
-            ThemeVariant::ColorPop => AppTheme::splunk(),
-            ThemeVariant::Splunk => AppTheme::default_theme(),
+            ThemeVariant::Default => {
+                if let Some(t) = self.theme_set.themes.get("base16-eighties.dark") {
+                    self.syntax_theme = t.clone();
+                }
+                AppTheme::color_pop()
+            },
+            ThemeVariant::ColorPop => {
+                // Use a theme that fits Splunk (Green/Orange)
+                // base16-mocha.dark is distinct.
+                if let Some(t) = self.theme_set.themes.get("base16-mocha.dark") {
+                    self.syntax_theme = t.clone();
+                } else if let Some(t) = self.theme_set.themes.get("InspiredGitHub") {
+                     self.syntax_theme = t.clone();
+                }
+                AppTheme::splunk()
+            },
+            ThemeVariant::Splunk => {
+                if let Some(t) = self.theme_set.themes.get("base16-ocean.dark") {
+                     self.syntax_theme = t.clone();
+                }
+                AppTheme::default_theme()
+            },
         };
+        // Refresh detail view syntax highlighting with new theme
+        self.update_detail_view();
     }
 
     fn initiate_save_search(&mut self) {
@@ -823,7 +849,79 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
             .unwrap_or_else(|| std::time::Duration::from_secs(0));
 
         if crossterm::event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
+            let evt = event::read()?;
+            match evt {
+                Event::Mouse(mouse_event) => {
+                     match mouse_event.kind {
+                         MouseEventKind::ScrollDown => {
+                             match app_guard.view_mode {
+                                 ViewMode::RawEvents => app_guard.scroll_down(),
+                                 ViewMode::Table => {
+                                     // If Table, scroll based on focus? Or just scroll table if focus is list?
+                                     // Let's implement generic focus-based scroll
+                                     match app_guard.view_focus {
+                                         ViewFocus::ContentList | ViewFocus::Search => {
+                                            // Scroll table
+                                            let next = match app_guard.table_state.selected() {
+                                                 Some(i) => {
+                                                     if i >= app_guard.search_results.len().saturating_sub(1) {
+                                                         0
+                                                     } else {
+                                                         i + 1
+                                                     }
+                                                 }
+                                                 None => 0,
+                                             };
+                                             if !app_guard.search_results.is_empty() {
+                                                 app_guard.table_state.select(Some(next));
+                                                 app_guard.detail_scroll = 0;
+                                                 app_guard.update_detail_view();
+                                             }
+                                         },
+                                         ViewFocus::ContentDetail => {
+                                             app_guard.detail_scroll = app_guard.detail_scroll.saturating_add(1);
+                                             app_guard.update_detail_view(); // Update because cached_detail might depend on something? No, just scroll.
+                                             // Actually Paragraph handles scroll. But we redraw every loop.
+                                             // No need to update cache if just scrolling detail?
+                                             // update_detail_view regenerates text. We don't need that.
+                                         }
+                                     }
+                                 }
+                             }
+                         }
+                         MouseEventKind::ScrollUp => {
+                             match app_guard.view_mode {
+                                 ViewMode::RawEvents => app_guard.scroll_up(),
+                                 ViewMode::Table => {
+                                     match app_guard.view_focus {
+                                         ViewFocus::ContentList | ViewFocus::Search => {
+                                             let prev = match app_guard.table_state.selected() {
+                                                 Some(i) => {
+                                                     if i == 0 {
+                                                         app_guard.search_results.len().saturating_sub(1)
+                                                     } else {
+                                                         i - 1
+                                                     }
+                                                 }
+                                                 None => 0,
+                                             };
+                                             if !app_guard.search_results.is_empty() {
+                                                 app_guard.table_state.select(Some(prev));
+                                                 app_guard.detail_scroll = 0;
+                                                 app_guard.update_detail_view();
+                                             }
+                                         },
+                                         ViewFocus::ContentDetail => {
+                                             app_guard.detail_scroll = app_guard.detail_scroll.saturating_sub(1);
+                                         }
+                                     }
+                                 }
+                             }
+                         }
+                         _ => {}
+                     }
+                }
+                Event::Key(key) => {
                 match app_guard.input_mode {
                     InputMode::Normal => match key.code {
                         KeyCode::Char('e') => {
@@ -1188,8 +1286,10 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                         }
                         _ => {}
                     }
-                }
-            }
+                } // End InputMode match
+                } // End Key match
+                _ => {}
+            } // End Event match
         }
     }
 }

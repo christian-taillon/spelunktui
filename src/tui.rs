@@ -712,7 +712,7 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                             return Ok(());
                         }
                         KeyCode::Char('k') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                             app_guard.kill_search().await;
+                             app_guard.scroll_up_fast();
                         }
                         KeyCode::Char('x') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                              app_guard.open_in_editor();

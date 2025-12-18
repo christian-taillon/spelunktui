@@ -1015,7 +1015,7 @@ fn ui(f: &mut Frame, app: &mut App) {
     let stats_paragraph = Paragraph::new(stats_text)
         .block(
             Block::default()
-                .borders(Borders::BOTTOM)
+                // Removed borders(Borders::BOTTOM) as requested
                 .title("Job Status")
                 .border_style(Style::default().fg(app.theme.title_main))
                 .padding(Padding::horizontal(4)),

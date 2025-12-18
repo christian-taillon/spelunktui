@@ -1,5 +1,5 @@
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseEventKind, MouseButton},
     cursor::SetCursorStyle,
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -21,6 +21,10 @@ use crate::api::SplunkClient;
 use crate::models::splunk::JobStatus;
 use crate::utils::saved_searches::SavedSearchManager;
 use serde_json::Value;
+
+fn is_inside(rect: Rect, col: u16, row: u16) -> bool {
+    col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
+}
 use log::{info, error};
 use chrono;
 use syntect::{
@@ -181,6 +185,11 @@ pub struct App {
     syntax_theme: Theme,
     cached_detail: ratatui::text::Text<'static>,
 
+    // Layout Areas (for mouse interaction)
+    pub search_area: Rect,
+    pub main_area: Rect,
+    pub detail_area: Rect,
+
     // Status polling
     is_status_fetching: bool,
 
@@ -218,6 +227,9 @@ impl App {
             theme_set,
             syntax_theme,
             cached_detail: ratatui::text::Text::default(),
+                search_area: Rect::default(),
+                main_area: Rect::default(),
+                detail_area: Rect::default(),
             client,
             status_message: String::from("Press 'q' to quit, 'e' to enter search mode, 't' to toggle theme."),
             theme: AppTheme::default_theme(),
@@ -880,10 +892,6 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                                          },
                                          ViewFocus::ContentDetail => {
                                              app_guard.detail_scroll = app_guard.detail_scroll.saturating_add(1);
-                                             app_guard.update_detail_view(); // Update because cached_detail might depend on something? No, just scroll.
-                                             // Actually Paragraph handles scroll. But we redraw every loop.
-                                             // No need to update cache if just scrolling detail?
-                                             // update_detail_view regenerates text. We don't need that.
                                          }
                                      }
                                  }
@@ -919,6 +927,18 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                              }
                          }
                          _ => {}
+                     }
+                     if let MouseEventKind::Down(MouseButton::Left) = mouse_event.kind {
+                         let col = mouse_event.column;
+                         let row = mouse_event.row;
+
+                         if is_inside(app_guard.search_area, col, row) {
+                             app_guard.view_focus = ViewFocus::Search;
+                         } else if is_inside(app_guard.main_area, col, row) {
+                             app_guard.view_focus = ViewFocus::ContentList;
+                         } else if is_inside(app_guard.detail_area, col, row) {
+                             app_guard.view_focus = ViewFocus::ContentDetail;
+                         }
                      }
                 }
                 Event::Key(key) => {
@@ -1392,6 +1412,9 @@ fn ui(f: &mut Frame, app: &mut App) {
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
         .split(chunks[0]);
 
+    // Store search area for mouse interaction
+    app.search_area = header_chunks[0];
+
     // 1. Search Input
     let input_style = match app.input_mode {
         InputMode::Normal => Style::default().fg(app.theme.text),
@@ -1558,6 +1581,10 @@ fn ui(f: &mut Frame, app: &mut App) {
         .border_style(Style::default().fg(app.theme.border))
         .padding(Padding::new(2, 2, 1, 1));
 
+    // Store main area default (RawEvents uses entire results_area)
+    app.main_area = results_area;
+    app.detail_area = Rect::default();
+
     if app.search_results.is_empty() {
         let text = Paragraph::new("No results available.")
             .alignment(Alignment::Center)
@@ -1635,6 +1662,10 @@ fn ui(f: &mut Frame, app: &mut App) {
                     .direction(Direction::Horizontal)
                     .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
                     .split(inner_area);
+
+                // Update layout areas for Table mode
+                app.main_area = inner_chunks[0];
+                app.detail_area = inner_chunks[1];
 
                 // --- Left Pane: Table ---
                 let table = Table::new(rows, [

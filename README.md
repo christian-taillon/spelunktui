@@ -36,10 +36,13 @@ A modern, terminal-based user interface for interacting with the ThreatConnect P
     Edit `.env` with your preferred editor and fill in your details:
 
     ```env
-    TC_ACCESS_ID=your_access_id
-    TC_SECRET_KEY=your_secret_key
-    TC_INSTANCE=your_instance_url (e.g., https://api.threatconnect.com)
+    SPLUNK_BASE_URL=https://your-splunk-instance:8089
+    SPLUNK_TOKEN=your_splunk_token
+    # Optional
+    SPLUNK_VERIFY_SSL=true
     ```
+
+    > **Note:** This application has been tested on Linux so far. Mac and Windows support to follow.
 
 ## Usage
 

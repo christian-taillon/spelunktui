@@ -28,7 +28,7 @@ use syntect::{
     parsing::SyntaxSet,
     easy::HighlightLines,
 };
-use tui_syntax_highlight::Highlighter;
+use syntect::highlighting::FontStyle;
 
 #[derive(Clone, Copy)]
 pub enum ThemeVariant {
@@ -177,6 +177,7 @@ pub struct App {
     // Syntax Highlighting
     syntax_set: SyntaxSet,
     syntax_theme: Theme,
+    cached_detail: ratatui::text::Text<'static>,
 
     // Status polling
     is_status_fetching: bool,
@@ -209,10 +210,11 @@ impl App {
             current_match_index: None,
             syntax_set: SyntaxSet::load_defaults_newlines(),
             syntax_theme: ThemeSet::load_defaults().themes["base16-ocean.dark"].clone(),
+            cached_detail: ratatui::text::Text::default(),
             client,
             status_message: String::from("Press 'q' to quit, 'e' to enter search mode, 't' to toggle theme."),
             theme: AppTheme::default_theme(),
-            view_mode: ViewMode::RawEvents,
+            view_mode: ViewMode::Table,
             view_focus: ViewFocus::Search,
             table_state: TableState::default(),
             detail_scroll: 0,
@@ -304,6 +306,7 @@ impl App {
                 ViewMode::Table => {
                     self.table_state.select(Some(*row_index));
                     self.detail_scroll = 0;
+                    self.update_detail_view();
                 }
             }
         }
@@ -645,6 +648,17 @@ impl App {
         };
         // Ensure cursor is style updated by next render
     }
+
+    fn update_detail_view(&mut self) {
+        if self.view_mode == ViewMode::Table {
+            let selected_idx = self.table_state.selected().unwrap_or(0);
+            if let Some(item) = self.search_results.get(selected_idx) {
+                self.cached_detail = render_yaml_detail(&self.syntax_set, &self.syntax_theme, item);
+            } else {
+                 self.cached_detail = ratatui::text::Text::from("Select an event...");
+            }
+        }
+    }
 }
 
 pub async fn run_app() -> Result<(), Box<dyn Error>> {
@@ -774,6 +788,9 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                                         app.results_fetched = true;
                                         app.status_message = format!("Loaded {} results.", app.search_results.len());
                                         app.is_status_fetching = false;
+                                        if app.view_mode == ViewMode::Table {
+                                            app.update_detail_view();
+                                        }
                                     },
                                     Err(e) => {
                                         let mut app = app_clone.lock().await;
@@ -850,10 +867,27 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
 
                         // Toggle View Mode (Ctrl+v OR Ctrl+m)
                         KeyCode::Char('v') | KeyCode::Char('m') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                            app_guard.view_mode = match app_guard.view_mode {
-                                ViewMode::RawEvents => ViewMode::Table,
-                                ViewMode::Table => ViewMode::RawEvents,
-                            };
+                            match app_guard.view_mode {
+                                ViewMode::RawEvents => {
+                                    app_guard.view_mode = ViewMode::Table;
+                                    // Sync selection from scroll_offset
+                                    let idx = app_guard.scroll_offset as usize;
+                                    if idx < app_guard.search_results.len() {
+                                        app_guard.table_state.select(Some(idx));
+                                        app_guard.update_detail_view();
+                                    } else if !app_guard.search_results.is_empty() {
+                                        app_guard.table_state.select(Some(0));
+                                        app_guard.update_detail_view();
+                                    }
+                                }
+                                ViewMode::Table => {
+                                    app_guard.view_mode = ViewMode::RawEvents;
+                                    // Sync scroll_offset from table selection
+                                    if let Some(idx) = app_guard.table_state.selected() {
+                                        app_guard.scroll_offset = idx as u16; // Warning: truncation if > u16
+                                    }
+                                }
+                            }
                             app_guard.status_message = format!("Switched to {:?} mode.", app_guard.view_mode);
                         }
 
@@ -919,6 +953,7 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                                                  if !app_guard.search_results.is_empty() {
                                                      app_guard.table_state.select(Some(next));
                                                      app_guard.detail_scroll = 0; // Reset detail scroll on row change
+                                                     app_guard.update_detail_view();
                                                  }
                                              }
                                              ViewFocus::ContentDetail => {
@@ -950,6 +985,7 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                                              if !app_guard.search_results.is_empty() {
                                                  app_guard.table_state.select(Some(prev));
                                                  app_guard.detail_scroll = 0;
+                                                 app_guard.update_detail_view();
                                              }
                                          }
                                          ViewFocus::ContentDetail => {
@@ -1156,19 +1192,76 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
     }
 }
 
-fn render_yaml_detail(syntax_set: &SyntaxSet, theme: &Theme, value: &Value) -> ratatui::text::Text<'static> {
-    let yaml_str = serde_yaml::to_string(value).unwrap_or_else(|e| format!("Error converting to YAML: {}", e));
+fn recursive_json_parse(v: Value) -> Value {
+    match v {
+        Value::Object(map) => {
+            let mut new_map = serde_json::Map::new();
+            for (k, val) in map {
+                new_map.insert(k, recursive_json_parse(val));
+            }
+            Value::Object(new_map)
+        }
+        Value::Array(arr) => {
+            Value::Array(arr.into_iter().map(recursive_json_parse).collect())
+        }
+        Value::String(s) => {
+            // Attempt to parse string as JSON
+            if let Ok(parsed) = serde_json::from_str::<Value>(&s) {
+                // If it parses, recurse on the result in case it's nested string-json
+                recursive_json_parse(parsed)
+            } else {
+                Value::String(s)
+            }
+        }
+        _ => v,
+    }
+}
 
+fn syntect_style_to_ratatui(style: syntect::highlighting::Style) -> Style {
+    let mut s = Style::default();
+
+    // Foreground
+    if style.foreground.a > 0 {
+        s = s.fg(Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b));
+    }
+
+    // Background - Ignored as requested ("Nothing should have background color")
+    // if style.background.a > 0 {
+    //     s = s.bg(Color::Rgb(style.background.r, style.background.g, style.background.b));
+    // }
+
+    // Font Style
+    if style.font_style.contains(FontStyle::BOLD) {
+        s = s.add_modifier(Modifier::BOLD);
+    }
+    if style.font_style.contains(FontStyle::ITALIC) {
+        s = s.add_modifier(Modifier::ITALIC);
+    }
+    if style.font_style.contains(FontStyle::UNDERLINE) {
+        s = s.add_modifier(Modifier::UNDERLINED);
+    }
+
+    s
+}
+
+fn render_yaml_detail(syntax_set: &SyntaxSet, theme: &Theme, value: &Value) -> ratatui::text::Text<'static> {
+    // 1. Recursive Parse
+    let parsed_value = recursive_json_parse(value.clone());
+
+    // 2. Convert to YAML
+    let yaml_str = serde_yaml::to_string(&parsed_value).unwrap_or_else(|e| format!("Error converting to YAML: {}", e));
+
+    // 3. Highlight
     let syntax = syntax_set.find_syntax_by_extension("yaml").unwrap_or_else(|| syntax_set.find_syntax_plain_text());
     let mut h = HighlightLines::new(syntax, theme);
-    let highlighter = Highlighter::new(theme.clone()); // tui-syntax-highlight 0.1.2 requirement
 
     let mut lines = Vec::new();
     for line in yaml_str.lines() {
-        match highlighter.highlight_line(line, &mut h, 4, Style::default(), syntax_set) {
-            Ok(l) => lines.push(l),
-            Err(_) => lines.push(Line::from(line.to_string())),
-        }
+        let ranges: Vec<(syntect::highlighting::Style, &str)> = h.highlight_line(line, syntax_set).unwrap_or_default();
+        let spans: Vec<Span> = ranges.into_iter().map(|(style, text)| {
+             Span::styled(text.to_string(), syntect_style_to_ratatui(style))
+        }).collect();
+        lines.push(Line::from(spans));
     }
 
     ratatui::text::Text::from(lines)
@@ -1276,7 +1369,11 @@ fn ui(f: &mut Frame, app: &mut App) {
     }
 
     let sparkline = Sparkline::default()
-        .block(Block::default().title("Activity").borders(Borders::ALL).border_style(Style::default().fg(app.theme.border)))
+        .block(Block::default()
+            .title("Activity")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(app.theme.border)))
         .data(&spark_data)
         .style(Style::default().fg(app.theme.summary_highlight));
     f.render_widget(sparkline, header_chunks[1]);
@@ -1452,17 +1549,8 @@ fn ui(f: &mut Frame, app: &mut App) {
                 f.render_stateful_widget(table.block(table_block), inner_chunks[0], &mut app.table_state);
 
                 // --- Right Pane: Detail ---
-                let selected_idx = app.table_state.selected().unwrap_or(0);
-
-                // Use new render_yaml_detail logic
-                let detail_text = if let Some(item) = app.search_results.get(selected_idx) {
-                    render_yaml_detail(&app.syntax_set, &app.syntax_theme, item)
-                } else {
-                    ratatui::text::Text::from("Select an event...")
-                };
-
-                 // Right Pane: Detail
-                let detail_paragraph = Paragraph::new(detail_text)
+                // Use cached detail text
+                let detail_paragraph = Paragraph::new(app.cached_detail.clone())
                     .block(Block::default()
                         .borders(Borders::NONE) // Remove left border to avoid double
                         .border_style(detail_border_style)

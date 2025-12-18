@@ -1829,7 +1829,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "toml",
- "tui-syntax-highlight",
  "url",
  "urlencoding",
 ]
@@ -2242,16 +2241,6 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
-
-[[package]]
-name = "tui-syntax-highlight"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b628410d3ef515b09e9895d2ff1713081eccfe757ba7561287cbaae802a8004"
-dependencies = [
- "ratatui",
- "syntect",
-]
 
 [[package]]
 name = "unicode-ident"

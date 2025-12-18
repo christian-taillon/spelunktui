@@ -136,8 +136,9 @@ pub enum ViewMode {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ViewFocus {
-    Table,
-    Detail,
+    Search,
+    ContentList,
+    ContentDetail,
 }
 
 pub struct App {
@@ -191,7 +192,7 @@ impl App {
             status_message: String::from("Press 'q' to quit, 'e' to enter search mode, 't' to toggle theme."),
             theme: AppTheme::default_theme(),
             view_mode: ViewMode::RawEvents,
-            view_focus: ViewFocus::Table,
+            view_focus: ViewFocus::Search,
             table_state: TableState::default(),
             detail_scroll: 0,
             current_job_sid: None,
@@ -759,37 +760,59 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                             app_guard.status_message = format!("Switched to {:?} mode.", app_guard.view_mode);
                         }
 
+                        KeyCode::Tab => {
+                            app_guard.view_focus = match app_guard.view_focus {
+                                ViewFocus::Search => ViewFocus::ContentList,
+                                ViewFocus::ContentList => {
+                                    if app_guard.view_mode == ViewMode::Table {
+                                        ViewFocus::ContentDetail
+                                    } else {
+                                        ViewFocus::Search
+                                    }
+                                },
+                                ViewFocus::ContentDetail => ViewFocus::Search,
+                            };
+                        }
+
                         KeyCode::Left | KeyCode::Char('h') => {
-                            app_guard.view_focus = ViewFocus::Table;
+                            app_guard.view_focus = ViewFocus::ContentList;
                         }
 
                         KeyCode::Right | KeyCode::Char('l') if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                             app_guard.view_focus = ViewFocus::Detail;
+                             if app_guard.view_mode == ViewMode::Table {
+                                 app_guard.view_focus = ViewFocus::ContentDetail;
+                             }
                         }
 
                         KeyCode::Down | KeyCode::Char('j') if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                             match app_guard.view_mode {
-                                 ViewMode::RawEvents => app_guard.scroll_down(),
-                                 ViewMode::Table => {
-                                     match app_guard.view_focus {
-                                         ViewFocus::Table => {
-                                             let next = match app_guard.table_state.selected() {
-                                                 Some(i) => {
-                                                     if i >= app_guard.search_results.len().saturating_sub(1) {
-                                                         0
-                                                     } else {
-                                                         i + 1
+                             if let ViewFocus::Search = app_guard.view_focus {
+                                 // Optional: Down from Search goes to Content
+                                 app_guard.view_focus = ViewFocus::ContentList;
+                             } else {
+                                 match app_guard.view_mode {
+                                     ViewMode::RawEvents => app_guard.scroll_down(),
+                                     ViewMode::Table => {
+                                         match app_guard.view_focus {
+                                             ViewFocus::ContentList => {
+                                                 let next = match app_guard.table_state.selected() {
+                                                     Some(i) => {
+                                                         if i >= app_guard.search_results.len().saturating_sub(1) {
+                                                             0
+                                                         } else {
+                                                             i + 1
+                                                         }
                                                      }
+                                                     None => 0,
+                                                 };
+                                                 if !app_guard.search_results.is_empty() {
+                                                     app_guard.table_state.select(Some(next));
+                                                     app_guard.detail_scroll = 0; // Reset detail scroll on row change
                                                  }
-                                                 None => 0,
-                                             };
-                                             if !app_guard.search_results.is_empty() {
-                                                 app_guard.table_state.select(Some(next));
-                                                 app_guard.detail_scroll = 0; // Reset detail scroll on row change
                                              }
-                                         }
-                                         ViewFocus::Detail => {
-                                             app_guard.detail_scroll = app_guard.detail_scroll.saturating_add(1);
+                                             ViewFocus::ContentDetail => {
+                                                 app_guard.detail_scroll = app_guard.detail_scroll.saturating_add(1);
+                                             }
+                                             _ => {}
                                          }
                                      }
                                  }
@@ -800,7 +823,7 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                                  ViewMode::RawEvents => app_guard.scroll_up(),
                                  ViewMode::Table => {
                                      match app_guard.view_focus {
-                                         ViewFocus::Table => {
+                                         ViewFocus::ContentList => {
                                              let prev = match app_guard.table_state.selected() {
                                                  Some(i) => {
                                                      if i == 0 {
@@ -817,12 +840,21 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                                                  app_guard.detail_scroll = 0;
                                              }
                                          }
-                                         ViewFocus::Detail => {
+                                         ViewFocus::ContentDetail => {
                                              app_guard.detail_scroll = app_guard.detail_scroll.saturating_sub(1);
                                          }
+                                         _ => {}
                                      }
                                  }
                              }
+                        }
+
+                        KeyCode::Char('x') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            if let ViewFocus::Search = app_guard.view_focus {
+                                app_guard.open_query_in_editor();
+                            } else {
+                                app_guard.open_in_editor();
+                            }
                         }
                         // 'x' mapping removed as requested
                         KeyCode::Enter => {
@@ -1123,23 +1155,23 @@ fn ui(f: &mut Frame, app: &mut App) {
     };
 
     if let Some(status) = &app.current_job_status {
-        stats_text.push(Line::from(vec![
+        let mut line_vec = vec![
             Span::styled("Status: ", Style::default().fg(app.theme.title_secondary)),
             Span::styled(format!("{} {} ", if status.is_done { "Done" } else { "Running" }, elapsed_text), Style::default().fg(app.theme.text)),
             Span::styled(" | Count: ", Style::default().fg(app.theme.title_secondary)),
             Span::styled(format!("{} ", status.result_count), Style::default().fg(app.theme.text)),
             Span::styled(" | Time: ", Style::default().fg(app.theme.title_secondary)),
             Span::styled(format!("{:.2}s ", status.run_duration), Style::default().fg(app.theme.text)),
-            // State removed as requested
-        ]));
+        ];
 
         if let Some(sid) = &app.current_job_sid {
             let url = app.client.get_shareable_url(sid);
-            stats_text.push(Line::from(vec![
-                Span::styled("URL: ", Style::default().fg(app.theme.title_secondary)),
-                Span::styled(url, Style::default().fg(app.theme.summary_highlight)),
-            ]));
+            line_vec.push(Span::styled(" | URL: ", Style::default().fg(app.theme.title_secondary)));
+            line_vec.push(Span::styled(url, Style::default().fg(app.theme.summary_highlight)));
         }
+
+        stats_text.push(Line::from(line_vec));
+
     } else if let Some(sid) = &app.current_job_sid {
         // Job created but status not yet fetched
         stats_text.push(Line::from(vec![
@@ -1204,12 +1236,12 @@ fn ui(f: &mut Frame, app: &mut App) {
             }
             ViewMode::Table => {
                 // Determine active pane border color
-                let table_border_style = if let ViewFocus::Table = app.view_focus {
+                let table_border_style = if let ViewFocus::ContentList = app.view_focus {
                     Style::default().fg(app.theme.active_label)
                 } else {
                     Style::default().fg(app.theme.border)
                 };
-                let detail_border_style = if let ViewFocus::Detail = app.view_focus {
+                let detail_border_style = if let ViewFocus::ContentDetail = app.view_focus {
                     Style::default().fg(app.theme.active_label)
                 } else {
                     Style::default().fg(app.theme.border)
@@ -1264,6 +1296,7 @@ fn ui(f: &mut Frame, app: &mut App) {
                 // Detail pane has Left side border.
                 // Let's re-add blocks to inner widgets to control border color.
 
+                // Use Right border for Table (left pane). Detail pane (right pane) has no left border.
                 let table_block = Block::default()
                     .borders(Borders::RIGHT)
                     .border_style(table_border_style);
@@ -1281,7 +1314,7 @@ fn ui(f: &mut Frame, app: &mut App) {
                  // Right Pane: Detail
                 let detail_paragraph = Paragraph::new(detail_text)
                     .block(Block::default()
-                        .borders(Borders::LEFT)
+                        .borders(Borders::NONE) // Remove left border to avoid double
                         .border_style(detail_border_style)
                         .padding(Padding::new(1, 0, 0, 0)))
                     .wrap(Wrap { trim: false })

@@ -1270,7 +1270,7 @@ fn render_yaml_detail(syntax_set: &SyntaxSet, theme: &Theme, value: &Value) -> r
 }
 
 fn ui(f: &mut Frame, app: &mut App) {
-    let header_height = 3; // Fixed height as requested (3 rows: Border, Content, Border)
+    let header_height = 5; // Fixed height: 5 cells total = 3 content lines + 2 borders
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

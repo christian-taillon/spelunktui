@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Alignment, Rect},
     style::{Color, Style, Modifier},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Padding, BorderType, Wrap, List, ListItem, ListState, Table, Row, Cell, TableState, Sparkline},
+    widgets::{Block, Borders, Paragraph, Padding, BorderType, Wrap, List, ListItem, ListState, Table, Row, TableState, Sparkline},
     Frame, Terminal,
 };
 use std::{error::Error, io, sync::Arc};
@@ -44,6 +44,7 @@ pub enum ThemeVariant {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct AppTheme {
     pub variant: ThemeVariant,
     pub border: Color,
@@ -395,10 +396,12 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn update_job_status(&mut self) {
         // Deprecated: Logic moved to background task in run_loop to avoid blocking UI
     }
 
+    #[allow(dead_code)]
     async fn kill_search(&mut self) {
         if let Some(sid) = &self.current_job_sid {
             if let Err(e) = self.client.delete_job(sid).await {
@@ -1062,7 +1065,7 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                              app_guard.scroll_down_fast();
                         }
                         KeyCode::Char('l') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                             app_guard.scroll_up_fast();
+                             app_guard.initiate_load_search();
                         }
                         // Open URL
                         KeyCode::Char('E') if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) => {
@@ -1070,9 +1073,6 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                         }
                         // Saved Searches
                         KeyCode::Char('s') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                             app_guard.initiate_load_search();
-                        }
-                        KeyCode::Char('w') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                              app_guard.initiate_save_search();
                         }
 
@@ -1755,11 +1755,6 @@ fn ui(f: &mut Frame, app: &mut App) {
                     Style::default().fg(app.theme.border)
                 };
 
-                let chunks = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
-                    .split(results_area);
-
                 // --- Left Pane: Table ---
                 // "Time Sourcetype Host Message should not have a highlighted background. Instead, underline the table headers."
                 // "In the Table View: Don't show Hosts."
@@ -1855,9 +1850,9 @@ fn ui(f: &mut Frame, app: &mut App) {
         Span::styled(" ^X ", Style::default().fg(app.theme.title_main)),
         Span::styled("Open in Editor  |  ", Style::default().fg(app.theme.text)),
         // Removed ^J NewLine
-        Span::styled(" ^S ", Style::default().fg(app.theme.title_main)),
+        Span::styled(" ^l ", Style::default().fg(app.theme.title_main)),
         Span::styled("Load  |  ", Style::default().fg(app.theme.text)),
-        Span::styled(" ^W ", Style::default().fg(app.theme.title_main)),
+        Span::styled(" ^s ", Style::default().fg(app.theme.title_main)),
         Span::styled("Save  |  ", Style::default().fg(app.theme.text)),
         Span::styled(" q ", Style::default().fg(app.theme.title_main)),
         Span::styled("Quit", Style::default().fg(app.theme.text)),

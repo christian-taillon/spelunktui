@@ -22,11 +22,13 @@ pub struct JobStatus {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct SplunkError {
     pub messages: Vec<SplunkErrorMessage>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct SplunkErrorMessage {
     pub r#type: String,
     pub text: String,

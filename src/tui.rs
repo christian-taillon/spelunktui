@@ -7,7 +7,7 @@ use crossterm::{
 use ratatui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Alignment, Rect},
-    style::{Color, Style},
+    style::{Color, Style, Modifier},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Padding, BorderType, Wrap, List, ListItem, ListState, Table, Row, Cell, TableState, Sparkline},
     Frame, Terminal,
@@ -751,7 +751,7 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                              app_guard.initiate_save_search();
                         }
 
-                        KeyCode::Char('m') => {
+                        KeyCode::Char('v') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                             app_guard.view_mode = match app_guard.view_mode {
                                 ViewMode::RawEvents => ViewMode::Table,
                                 ViewMode::Table => ViewMode::RawEvents,
@@ -1001,8 +1001,10 @@ fn ui(f: &mut Frame, app: &mut App) {
     let max_height = f.area().height / 2;
     let desired_input_height = input_lines + 2;
     let actual_input_height = desired_input_height.min(max_height);
-    // Header height is just the input height now
-    let header_height = actual_input_height;
+    // Header height is just the input height now, but user requested fixed 2 lines box (height ~3 or 4)
+    // "Spl Search should be default be two lines box" -> borders + 1 line? or borders + 2 lines?
+    // Let's assume height 3 (Border, Content, Border).
+    let header_height = 3;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -1010,9 +1012,9 @@ fn ui(f: &mut Frame, app: &mut App) {
         .constraints(
             [
                 Constraint::Length(header_height), // Header: Search + Sparkline
-                Constraint::Length(3),             // Job Status
+                Constraint::Length(1),             // Job Status (no block borders)
                 Constraint::Min(10),               // Content
-                Constraint::Length(3),             // Footer (Navigation)
+                Constraint::Length(1),             // Footer (Navigation, centered, one line)
             ]
             .as_ref(),
         )
@@ -1150,12 +1152,7 @@ fn ui(f: &mut Frame, app: &mut App) {
     }
 
     let stats_paragraph = Paragraph::new(stats_text)
-        .block(
-            Block::default()
-                .title("Job Status")
-                .border_style(Style::default().fg(app.theme.title_main))
-                .padding(Padding::horizontal(4)),
-        )
+        .alignment(Alignment::Center)
         .style(Style::default().fg(app.theme.text));
     f.render_widget(stats_paragraph, chunks[1]);
 
@@ -1206,23 +1203,37 @@ fn ui(f: &mut Frame, app: &mut App) {
                 f.render_widget(paragraph, results_area);
             }
             ViewMode::Table => {
+                // Determine active pane border color
+                let table_border_style = if let ViewFocus::Table = app.view_focus {
+                    Style::default().fg(app.theme.active_label)
+                } else {
+                    Style::default().fg(app.theme.border)
+                };
+                let detail_border_style = if let ViewFocus::Detail = app.view_focus {
+                    Style::default().fg(app.theme.active_label)
+                } else {
+                    Style::default().fg(app.theme.border)
+                };
+
                 let chunks = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
                     .split(results_area);
 
                 // --- Left Pane: Table ---
-                let header = Row::new(vec!["Time", "Sourcetype", "Host", "Message"])
-                    .style(Style::default().fg(app.theme.title_secondary).bg(app.theme.confidence_empty))
+                // "Time Sourcetype Host Message should not have a highlighted background. Instead, underline the table headers."
+                // "In the Table View: Don't show Hosts."
+                let header = Row::new(vec!["Time", "Sourcetype", "Message"])
+                    .style(Style::default().fg(app.theme.title_secondary).add_modifier(Modifier::UNDERLINED))
                     .bottom_margin(1);
 
                 let rows: Vec<Row> = app.search_results.iter().map(|item| {
                     let time = item.get("_time").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     let sourcetype = item.get("sourcetype").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let host = item.get("host").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    // Host removed
                     let msg = item.get("_raw").and_then(|v| v.as_str()).unwrap_or("").lines().next().unwrap_or("").to_string();
 
-                    Row::new(vec![time, sourcetype, host, msg])
+                    Row::new(vec![time, sourcetype, msg])
                         .style(Style::default().fg(app.theme.text))
                 }).collect();
 
@@ -1240,13 +1251,24 @@ fn ui(f: &mut Frame, app: &mut App) {
                 let table = Table::new(rows, [
                         Constraint::Length(24), // Time
                         Constraint::Length(20), // Sourcetype
-                        Constraint::Length(20), // Host
-                        Constraint::Min(20),    // Message
+                        Constraint::Min(20),    // Message (Host removed)
                     ])
                     .header(header)
                     .row_highlight_style(Style::default().bg(app.theme.summary_highlight).fg(Color::White))
                     .highlight_symbol(">> ");
-                f.render_stateful_widget(table, inner_chunks[0], &mut app.table_state);
+
+                // Render table directly into chunk, but we need to handle borders if we want distinct colors.
+                // Since we render the outer block, inner widgets shouldn't necessarily have borders unless we want to override the middle separator?
+                // The prompt asked: "When moving from the table panel to the details panel, can we use color line to indicate the active section."
+                // We can wrap the Table in a Block with a colored border (Right side?).
+                // Detail pane has Left side border.
+                // Let's re-add blocks to inner widgets to control border color.
+
+                let table_block = Block::default()
+                    .borders(Borders::RIGHT)
+                    .border_style(table_border_style);
+
+                f.render_stateful_widget(table.block(table_block), inner_chunks[0], &mut app.table_state);
 
                 // --- Right Pane: Detail ---
                 let selected_idx = app.table_state.selected().unwrap_or(0);
@@ -1260,7 +1282,7 @@ fn ui(f: &mut Frame, app: &mut App) {
                 let detail_paragraph = Paragraph::new(detail_text)
                     .block(Block::default()
                         .borders(Borders::LEFT)
-                        .border_style(Style::default().fg(app.theme.border))
+                        .border_style(detail_border_style)
                         .padding(Padding::new(1, 0, 0, 0)))
                     .wrap(Wrap { trim: false })
                     .scroll((app.detail_scroll, 0))
@@ -1271,6 +1293,12 @@ fn ui(f: &mut Frame, app: &mut App) {
     }
 
     // --- Footer (Navigation) ---
+    // "Remove the ' Navigation' and the line its on."
+    // "At the bottom of the Search Results, there should just be one line, listing our navigation hints."
+    // "Lets center it."
+    // "lets remove ' ^J NewLine' from the nav bar."
+    // "Remove the status line at the bottom"
+
     let mut footer_spans = vec![
         Span::styled(" e ", Style::default().fg(app.theme.title_main)),
         Span::styled("Search  |  ", Style::default().fg(app.theme.text)),
@@ -1284,12 +1312,11 @@ fn ui(f: &mut Frame, app: &mut App) {
     footer_spans.extend(vec![
         Span::styled(" ↑/↓ ", Style::default().fg(app.theme.title_main)),
         Span::styled("Scroll  |  ", Style::default().fg(app.theme.text)),
-        Span::styled(" m ", Style::default().fg(app.theme.title_main)),
+        Span::styled(" ^V ", Style::default().fg(app.theme.title_main)),
         Span::styled("View Mode  |  ", Style::default().fg(app.theme.text)),
         Span::styled(" ^X ", Style::default().fg(app.theme.title_main)),
         Span::styled("Open in Editor  |  ", Style::default().fg(app.theme.text)),
-        Span::styled(" ^J ", Style::default().fg(app.theme.title_main)),
-        Span::styled("NewLine  |  ", Style::default().fg(app.theme.text)),
+        // Removed ^J NewLine
         Span::styled(" ^S ", Style::default().fg(app.theme.title_main)),
         Span::styled("Load  |  ", Style::default().fg(app.theme.text)),
         Span::styled(" ^W ", Style::default().fg(app.theme.title_main)),
@@ -1298,19 +1325,10 @@ fn ui(f: &mut Frame, app: &mut App) {
         Span::styled("Quit", Style::default().fg(app.theme.text)),
     ]);
 
-    let footer_text = vec![
-        Line::from(footer_spans),
-        Line::from(Span::styled(app.status_message.clone(), Style::default().fg(app.theme.text))),
-    ];
-    let footer = Paragraph::new(footer_text)
-        .block(
-            Block::default()
-                // .borders(Borders::ALL) // Minimal style for bottom bar
-                // .border_type(BorderType::Rounded)
-                .title("Navigation")
-                .border_style(Style::default().fg(app.theme.border))
-                .padding(Padding::horizontal(4)),
-        );
+    let footer = Paragraph::new(Line::from(footer_spans))
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(app.theme.text));
+
     f.render_widget(footer, chunks[3]);
 
     // --- Modals ---

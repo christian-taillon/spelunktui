@@ -20,6 +20,7 @@ use tokio::sync::Mutex;
 use crate::api::SplunkClient;
 use crate::models::splunk::JobStatus;
 use crate::utils::saved_searches::SavedSearchManager;
+use crate::config::Config;
 use serde_json::Value;
 
 fn is_inside(rect: Rect, col: u16, row: u16) -> bool {
@@ -34,11 +35,12 @@ use syntect::{
 };
 use syntect::highlighting::FontStyle;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum ThemeVariant {
     Default,
     ColorPop,
     Splunk,
+    Neon,
 }
 
 #[derive(Clone)]
@@ -116,6 +118,26 @@ impl AppTheme {
             separator: Color::Rgb(80, 80, 80),
         }
     }
+
+    pub fn neon() -> Self {
+        // Active BG: #FF1493 (DeepPink), Active FG: Black, Inactive BG: #00FF00 (Lime), Inactive FG: Black
+        Self {
+            variant: ThemeVariant::Neon,
+            border: Color::Rgb(0, 255, 0), // Inactive Pill BG (Lime)
+            text: Color::White,
+            input_edit: Color::Rgb(255, 20, 147), // Active Pill BG (DeepPink)
+            title_main: Color::Rgb(0, 255, 0), // Lime
+            title_secondary: Color::Cyan,
+            summary_highlight: Color::Rgb(255, 20, 147), // DeepPink
+            owner_label: Color::Rgb(0, 255, 0),
+            date_label: Color::DarkGray,
+            active_label: Color::Rgb(255, 20, 147), // DeepPink
+            evilness_label: Color::Red,
+            confidence_filled: Color::Rgb(255, 20, 147),
+            confidence_empty: Color::DarkGray,
+            separator: Color::DarkGray,
+        }
+    }
 }
 
 enum InputMode {
@@ -125,6 +147,7 @@ enum InputMode {
     LoadSearch,
     ConfirmOverwrite,
     LocalSearch,
+    ThemeSelect,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -206,6 +229,10 @@ pub struct App {
     cursor_position: usize, // Byte index into input string
     editor_file_path: Option<String>,
 
+    // Theme Selection
+    theme_list_state: ListState,
+    theme_options: Vec<&'static str>,
+
     // Timing
     job_created_at: Option<std::time::Instant>,
 }
@@ -214,8 +241,7 @@ impl App {
     pub fn new(client: Arc<SplunkClient>) -> App {
         let theme_set = ThemeSet::load_defaults();
         let syntax_theme = theme_set.themes["base16-ocean.dark"].clone();
-
-        App {
+        let mut app = App {
             input: String::new(),
             input_scroll: 0,
             input_scroll_x: 0,
@@ -251,8 +277,18 @@ impl App {
             editor_mode: EditorMode::Standard,
             cursor_position: 0,
             editor_file_path: None,
+            theme_list_state: ListState::default(),
+            theme_options: vec!["Default", "ColorPop", "Splunk", "Neon"],
             job_created_at: None,
+        };
+
+        // Load saved theme
+        if let Ok(config) = Config::load() {
+            if let Some(theme_name) = config.theme {
+                app.apply_theme(&theme_name);
+            }
         }
+        app
     }
 
     fn perform_local_search(&mut self) {
@@ -456,17 +492,21 @@ impl App {
         }
     }
 
-    fn toggle_theme(&mut self) {
-        self.theme = match self.theme.variant {
-            ThemeVariant::Default => {
+    fn apply_theme(&mut self, theme_name: &str) {
+        self.theme = match theme_name {
+            "Default" => {
+                if let Some(t) = self.theme_set.themes.get("base16-ocean.dark") {
+                     self.syntax_theme = t.clone();
+                }
+                AppTheme::default_theme()
+            },
+            "ColorPop" => {
                 if let Some(t) = self.theme_set.themes.get("base16-eighties.dark") {
                     self.syntax_theme = t.clone();
                 }
                 AppTheme::color_pop()
             },
-            ThemeVariant::ColorPop => {
-                // Use a theme that fits Splunk (Green/Orange)
-                // base16-mocha.dark is distinct.
+            "Splunk" => {
                 if let Some(t) = self.theme_set.themes.get("base16-mocha.dark") {
                     self.syntax_theme = t.clone();
                 } else if let Some(t) = self.theme_set.themes.get("InspiredGitHub") {
@@ -474,15 +514,22 @@ impl App {
                 }
                 AppTheme::splunk()
             },
-            ThemeVariant::Splunk => {
+            "Neon" => {
                 if let Some(t) = self.theme_set.themes.get("base16-ocean.dark") {
                      self.syntax_theme = t.clone();
                 }
-                AppTheme::default_theme()
+                AppTheme::neon()
             },
+            _ => AppTheme::default_theme(),
         };
-        // Refresh detail view syntax highlighting with new theme
         self.update_detail_view();
+        let _ = Config::save_theme(theme_name);
+    }
+
+    fn toggle_theme_selector(&mut self) {
+        self.input_mode = InputMode::ThemeSelect;
+        self.theme_list_state.select(Some(0));
+        self.status_message = String::from("Select theme (Up/Down/Enter), Esc to cancel.");
     }
 
     fn initiate_save_search(&mut self) {
@@ -977,8 +1024,11 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                             // If re-entering, ensure cursor is valid
                             app_guard.clamp_cursor();
                         }
+                        KeyCode::Char('t') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            app_guard.toggle_theme_selector();
+                        }
                         KeyCode::Char('t') => {
-                            app_guard.toggle_theme();
+                            app_guard.toggle_theme_selector();
                         }
                         KeyCode::Char('q') => {
                             return Ok(());
@@ -1330,6 +1380,39 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                         KeyCode::Esc => {
                             app_guard.input_mode = InputMode::Normal;
                             app_guard.status_message = String::from("Local search cancelled.");
+                        }
+                        _ => {}
+                    },
+                    InputMode::ThemeSelect => match key.code {
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            let i = match app_guard.theme_list_state.selected() {
+                                Some(i) => {
+                                    if i >= app_guard.theme_options.len() - 1 { 0 } else { i + 1 }
+                                }
+                                None => 0,
+                            };
+                            app_guard.theme_list_state.select(Some(i));
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            let i = match app_guard.theme_list_state.selected() {
+                                Some(i) => {
+                                    if i == 0 { app_guard.theme_options.len() - 1 } else { i - 1 }
+                                }
+                                None => 0,
+                            };
+                            app_guard.theme_list_state.select(Some(i));
+                        }
+                        KeyCode::Enter => {
+                            if let Some(idx) = app_guard.theme_list_state.selected() {
+                                let theme_name = app_guard.theme_options[idx];
+                                app_guard.apply_theme(theme_name);
+                                app_guard.status_message = format!("Theme '{}' applied.", theme_name);
+                            }
+                            app_guard.input_mode = InputMode::Normal;
+                        }
+                        KeyCode::Esc => {
+                            app_guard.input_mode = InputMode::Normal;
+                            app_guard.status_message = String::from("Theme selection cancelled.");
                         }
                         _ => {}
                     }
@@ -1790,6 +1873,26 @@ fn ui(f: &mut Frame, app: &mut App) {
              area.x + 1 + app.local_search_query.len() as u16,
              area.y + 1
         ));
+    }
+
+    if let InputMode::ThemeSelect = app.input_mode {
+        let area = centered_rect(40, 40, f.area());
+        f.render_widget(ratatui::widgets::Clear, area);
+
+        let items: Vec<ListItem> = app.theme_options
+            .iter()
+            .map(|i| ListItem::new(*i).style(Style::default().fg(app.theme.text)))
+            .collect();
+
+        let list = List::new(items)
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .title("Select Theme")
+                .border_style(Style::default().fg(app.theme.title_main)))
+            .highlight_style(Style::default().bg(app.theme.summary_highlight).fg(Color::White))
+            .highlight_symbol(">> ");
+
+        f.render_stateful_widget(list, area, &mut app.theme_list_state);
     }
 
     if let InputMode::SaveSearch = app.input_mode {

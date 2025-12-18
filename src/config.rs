@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -11,6 +11,7 @@ pub struct Config {
     pub splunk_base_url: String,
     pub splunk_token: String,
     pub splunk_verify_ssl: bool,
+    pub theme: Option<String>,
 }
 
 impl Config {
@@ -101,15 +102,17 @@ impl Default for Config {
             splunk_base_url: String::new(),
             splunk_token: String::new(),
             splunk_verify_ssl: false,
+            theme: None,
         }
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct FileConfig {
     splunk_base_url: Option<String>,
     splunk_token: Option<String>,
     splunk_verify_ssl: Option<bool>,
+    theme: Option<String>,
 }
 
 impl Config {
@@ -117,6 +120,38 @@ impl Config {
         if let Some(v) = other.splunk_base_url { self.splunk_base_url = v; }
         if let Some(v) = other.splunk_token { self.splunk_token = v; }
         if let Some(v) = other.splunk_verify_ssl { self.splunk_verify_ssl = v; }
+        if let Some(v) = other.theme { self.theme = Some(v); }
+    }
+
+    pub fn save_theme(theme_name: &str) -> Result<()> {
+        if let Some(proj_dirs) = ProjectDirs::from("", "", "splunk-tui") {
+            let config_dir = proj_dirs.config_dir();
+            std::fs::create_dir_all(config_dir)?;
+            let config_path = config_dir.join("config.toml");
+
+            // Read existing or create new
+            let mut file_config: FileConfig = if config_path.exists() {
+                let content = std::fs::read_to_string(&config_path)?;
+                toml::from_str(&content).unwrap_or(FileConfig {
+                    splunk_base_url: None,
+                    splunk_token: None,
+                    splunk_verify_ssl: None,
+                    theme: None
+                })
+            } else {
+                FileConfig {
+                    splunk_base_url: None,
+                    splunk_token: None,
+                    splunk_verify_ssl: None,
+                    theme: None
+                }
+            };
+
+            file_config.theme = Some(theme_name.to_string());
+            let toml_string = toml::to_string(&file_config)?;
+            std::fs::write(config_path, toml_string)?;
+        }
+        Ok(())
     }
 }
 

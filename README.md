@@ -1,28 +1,28 @@
-# ThreatConnect TUI
+# Splunk TUI
 
-![ThreatConnect TUI](new_tui_tc.png)
+![Splunk TUI](new_tui_tc.png)
 
-A modern, terminal-based user interface for interacting with the ThreatConnect Platform. This tool provides a keyboard-centric, efficient way to search indicators, view details, and manage your ThreatConnect data directly from your terminal.
+A modern, terminal-based user interface for interacting with the Splunk Platform. This tool provides a keyboard-centric, efficient way to run searches, view results, and manage your Splunk jobs directly from your terminal.
 
 ## Features
 
 *   **Fast & Efficient**: Built in Rust for performance and low resource usage.
 *   **Keyboard Navigation**: Vim-like keybindings for rapid interaction.
-*   **Detailed Views**: Inspect indicators, attributes, tags, and associations.
-*   **Search**: Powerful search capabilities to find what you need quickly.
+*   **Detailed Views**: Inspect search results with syntax highlighting and structured data views.
+*   **Search**: Powerful SPL search capabilities to find what you need quickly.
 
 ## Prerequisites
 
 *   **Rust**: You need to have Rust and Cargo installed. You can install them via [rustup](https://rustup.rs/).
-*   **ThreatConnect API Credentials**: You need an API Access ID and Secret Key from your ThreatConnect instance.
+*   **Splunk Credentials**: You need a Splunk Base URL and Authentication Token.
 
 ## Installation
 
 1.  **Clone the repository:**
 
     ```bash
-    git clone https://github.com/Arizona-Cyber-Threat-Response-Alliance/threatconnect-tui.git
-    cd threatconnect-tui
+    git clone https://github.com/PicoMitchell/splunk-tui.git
+    cd splunk-tui
     ```
 
 2.  **Configure Credentials:**
@@ -36,10 +36,13 @@ A modern, terminal-based user interface for interacting with the ThreatConnect P
     Edit `.env` with your preferred editor and fill in your details:
 
     ```env
-    TC_ACCESS_ID=your_access_id
-    TC_SECRET_KEY=your_secret_key
-    TC_INSTANCE=your_instance_url (e.g., https://api.threatconnect.com)
+    SPLUNK_BASE_URL=https://your-splunk-instance:8089
+    SPLUNK_TOKEN=your_splunk_token
+    # Optional
+    SPLUNK_VERIFY_SSL=true
     ```
+
+    > **Note:** This application has been tested on Linux so far. Mac and Windows support to follow.
 
 ## Usage
 
@@ -51,14 +54,7 @@ To run the application directly with Cargo:
 cargo run
 ```
 
-### Using NPM
 
-If you prefer using NPM scripts (e.g., in a mixed environment), we provide a wrapper:
-
-```bash
-npm install
-npm start
-```
 
 ## Keybindings
 

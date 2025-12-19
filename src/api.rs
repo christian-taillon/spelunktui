@@ -131,6 +131,7 @@ impl SplunkClient {
         Ok(vec![])
     }
 
+    #[allow(dead_code)]
     pub async fn delete_job(&self, sid: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
         let url = format!("{}/services/search/jobs/{}", self.base_url, sid);
 

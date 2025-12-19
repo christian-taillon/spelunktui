@@ -1,7 +1,7 @@
 {
-  "name": "threatconnect-tui",
+  "name": "splunk-tui",
   "version": "0.1.0",
-  "description": "A TUI for ThreatConnect, written in Rust.",
+  "description": "A TUI for Splunk, written in Rust.",
   "scripts": {
     "start": "cargo run",
     "test": "cargo test"

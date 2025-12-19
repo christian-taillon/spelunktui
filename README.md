@@ -1,28 +1,28 @@
-# ThreatConnect TUI
+# Splunk TUI
 
-![ThreatConnect TUI](new_tui_tc.png)
+![Splunk TUI](new_tui_tc.png)
 
-A modern, terminal-based user interface for interacting with the ThreatConnect Platform. This tool provides a keyboard-centric, efficient way to search indicators, view details, and manage your ThreatConnect data directly from your terminal.
+A modern, terminal-based user interface for interacting with the Splunk Platform. This tool provides a keyboard-centric, efficient way to run searches, view results, and manage your Splunk jobs directly from your terminal.
 
 ## Features
 
 *   **Fast & Efficient**: Built in Rust for performance and low resource usage.
 *   **Keyboard Navigation**: Vim-like keybindings for rapid interaction.
-*   **Detailed Views**: Inspect indicators, attributes, tags, and associations.
-*   **Search**: Powerful search capabilities to find what you need quickly.
+*   **Detailed Views**: Inspect search results with syntax highlighting and structured data views.
+*   **Search**: Powerful SPL search capabilities to find what you need quickly.
 
 ## Prerequisites
 
 *   **Rust**: You need to have Rust and Cargo installed. You can install them via [rustup](https://rustup.rs/).
-*   **ThreatConnect API Credentials**: You need an API Access ID and Secret Key from your ThreatConnect instance.
+*   **Splunk Credentials**: You need a Splunk Base URL and Authentication Token.
 
 ## Installation
 
 1.  **Clone the repository:**
 
     ```bash
-    git clone https://github.com/Arizona-Cyber-Threat-Response-Alliance/threatconnect-tui.git
-    cd threatconnect-tui
+    git clone https://github.com/PicoMitchell/splunk-tui.git
+    cd splunk-tui
     ```
 
 2.  **Configure Credentials:**

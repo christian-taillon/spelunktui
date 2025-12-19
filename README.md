@@ -49,22 +49,33 @@ cp .env.example .env
 Splunk TUI is designed for keyboard efficiency. Press `Ctrl + /` in the app to view the full help modal.
 
 ### General
-- `q` or `Ctrl+c`: Quit
-- `t`: Cycle Themes
 - `Ctrl+/`: Show Help
+- `q`: Quit
+- `e`: Enter Search Input Mode
+- `t` or `Ctrl+t`: Cycle Themes
 
 ### Search Editor
 - `Enter`: Run Search
-- `Shift+Enter`: New line (Standard mode)
+- `Shift+Enter` or `Ctrl+j`: New line (Standard mode)
 - `Ctrl+v`: Toggle Vim Mode (Normal/Insert)
 - `Ctrl+x`: Open search in external `$EDITOR`
-- `Ctrl+s`: Load Saved Search
-- `Ctrl+w`: Save Current Search
+- `Esc`: Exit to Navigation mode
 
 ### Results & Navigation
 - `h`, `j`, `k`, `l` or Arrows: Navigate results
+- `Ctrl+j` / `Ctrl+k`: Fast Scroll
+- `Ctrl+r`: Clear Results
+- `Ctrl+l`: Load Saved Search
+- `Ctrl+s`: Save Current Search
 - `Shift+e`: Open search job in browser
-- `Ctrl+k`: Kill current search job
+- `Ctrl+v` or `Ctrl+m`: Toggle Raw/Table View
+- `Ctrl+x`: Open Results in External Editor
+- `/`: Local Regex Search
+- `n` / `N`: Next / Previous match in Local Search
+
+### Pane Navigation
+- `Tab`: Cycle Focus (Search > List > Detail)
+- `h` / `l` or `Left` / `Right`: Focus Panes (List vs Detail)
 
 ## License
 

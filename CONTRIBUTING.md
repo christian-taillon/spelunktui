@@ -54,7 +54,7 @@ cargo clippy -- -D warnings
 
 ## Reporting Issues
 
-If you find a bug or have a feature request, please [open an issue](https://github.com/PicoMitchell/splunk-tui/issues) on GitHub. Provide as much detail as possible, including steps to reproduce the issue.
+If you find a bug or have a feature request, please [open an issue](https://github.com/christian-taillon/spelunktui/issues) on GitHub. Provide as much detail as possible, including steps to reproduce the issue.
 
 ## License
 

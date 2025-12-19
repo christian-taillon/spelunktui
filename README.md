@@ -20,8 +20,8 @@ A modern, high-performance terminal user interface for interacting with the Splu
 Ensure you have [Rust and Cargo](https://rustup.rs/) installed:
 
 ```bash
-git clone https://github.com/PicoMitchell/splunk-tui.git
-cd splunk-tui
+git clone https://github.com/christian-taillon/spelunktui.git
+cd spelunktui
 cargo build --release
 ```
 

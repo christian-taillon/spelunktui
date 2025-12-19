@@ -54,14 +54,7 @@ To run the application directly with Cargo:
 cargo run
 ```
 
-### Using NPM
 
-If you prefer using NPM scripts (e.g., in a mixed environment), we provide a wrapper:
-
-```bash
-npm install
-npm start
-```
 
 ## Keybindings
 

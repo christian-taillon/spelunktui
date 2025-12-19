@@ -22,10 +22,10 @@ Ensure you have [Rust and Cargo](https://rustup.rs/) installed:
 ```bash
 git clone https://github.com/christian-taillon/spelunktui.git
 cd spelunktui
-cargo build --release
+cargo install --path .
 ```
 
-The binary will be available at `./target/release/splunk-tui`.
+This will compile the binary and install it into your Cargo bin directory (usually `~/.cargo/bin`), which is typically in your system's `$PATH`. You can then run the app by simply typing `splunk-tui` in your terminal.
 
 ## Configuration
 

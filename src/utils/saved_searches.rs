@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::io;
+#[cfg(not(test))]
 use directories::ProjectDirs;
 
 pub struct SavedSearchManager;

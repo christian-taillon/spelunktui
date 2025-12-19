@@ -149,17 +149,16 @@ impl SplunkClient {
 
     pub fn get_shareable_url(&self, sid: &str) -> String {
         // Assume base_url is like https://splunk.example.com:8089 or https://splunk.example.com
-        // We need the web interface URL, which usually runs on 8000, or same host different port.
-        // Or we just use the base URL and hope it's the web URL or the user provided the web URL.
-        // Usually, the management port is 8089. The web port is 8000.
+        // We need the web interface URL.
+        // Usually, the management port is 8089. The web port is 8000 (HTTP) or 443 (HTTPS/Cloud).
         // Let's assume the user configures SPLUNK_BASE_URL as the management URL.
-        // If it contains :8089, we might want to strip it or replace with 8000 for the link,
-        // but that's a guess. Best effort: use the host.
+        // If it contains :8089, we remove it, assuming the web interface is on the default port (443).
+        // This fixes links for Splunk Cloud and standard HTTPS deployments.
 
         // A robust way is to ask the user for WEB_URL, but we didn't add that to config.
-        // We will try to replace :8089 with :8000 if present, otherwise append path.
+        // We will try to replace :8089 with empty string if present, otherwise append path.
         
-        let web_url = self.base_url.replace(":8089", ":8000");
+        let web_url = self.base_url.replace(":8089", "");
         format!("{}/en-US/app/search/search?sid={}", web_url, sid)
     }
 }
@@ -190,5 +189,16 @@ mod tests {
         
         // Leading whitespace
         assert_eq!(format_query("  index=main  "), "| search index=main");
+    }
+
+    #[test]
+    fn test_get_shareable_url() {
+        let client = SplunkClient::new("https://splunk.example.com:8089".to_string(), "token".to_string(), false);
+        let url = client.get_shareable_url("12345");
+        assert_eq!(url, "https://splunk.example.com/en-US/app/search/search?sid=12345");
+
+        let client2 = SplunkClient::new("https://splunk.example.com".to_string(), "token".to_string(), false);
+        let url2 = client2.get_shareable_url("67890");
+        assert_eq!(url2, "https://splunk.example.com/en-US/app/search/search?sid=67890");
     }
 }

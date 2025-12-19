@@ -149,6 +149,7 @@ enum InputMode {
     ConfirmOverwrite,
     LocalSearch,
     ThemeSelect,
+    Help,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1044,6 +1045,10 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                         KeyCode::Char('t') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                             app_guard.toggle_theme_selector();
                         }
+                        // Help
+                        KeyCode::Char('/') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                             app_guard.input_mode = InputMode::Help;
+                        }
                         KeyCode::Char('t') => {
                             app_guard.toggle_theme_selector();
                         }
@@ -1427,6 +1432,12 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                         KeyCode::Esc => {
                             app_guard.input_mode = InputMode::Normal;
                             app_guard.status_message = String::from("Theme selection cancelled.");
+                        }
+                        _ => {}
+                    },
+                    InputMode::Help => match key.code {
+                        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                            app_guard.input_mode = InputMode::Normal;
                         }
                         _ => {}
                     }
@@ -1902,6 +1913,60 @@ fn ui(f: &mut Frame, app: &mut App) {
             .highlight_symbol(">> ");
 
         f.render_stateful_widget(list, area, &mut app.theme_list_state);
+    }
+
+    if let InputMode::Help = app.input_mode {
+        let area = centered_rect(60, 80, f.area());
+        f.render_widget(ratatui::widgets::Clear, area);
+
+        let shortcuts = vec![
+            ("General", ""),
+            ("Ctrl+/", "Show this Help"),
+            ("q", "Quit"),
+            ("e", "Enter Search Input Mode"),
+            ("Ctrl+t", "Toggle Theme"),
+            ("", ""),
+            ("Search Input", ""),
+            ("Enter", "Run Search"),
+            ("Shift+Enter", "Newline (Standard Mode)"),
+            ("Ctrl+x", "Edit Query in External Editor"),
+            ("Ctrl+v", "Toggle Vim/Standard Mode"),
+            ("Ctrl+s", "Save Search"),
+            ("", ""),
+            ("Results & Navigation", ""),
+            ("j / k / Down / Up", "Scroll / Navigate"),
+            ("Ctrl+j / Ctrl+k", "Fast Scroll"),
+            ("Ctrl+r", "Clear Results"),
+            ("Ctrl+l", "Load Saved Search"),
+            ("Shift+E", "Open Job in Browser"),
+            ("Ctrl+v / Ctrl+m", "Toggle Raw/Table View"),
+            ("Ctrl+x", "Open Results in External Editor"),
+            ("/ / n / N", "Local Regex Search / Next / Prev"),
+            ("", ""),
+            ("Pane Navigation", ""),
+            ("Tab", "Cycle Focus (Search > List > Detail)"),
+            ("h / l / Left / Right", "Focus Panes"),
+        ];
+
+        let rows: Vec<Row> = shortcuts.iter().map(|(k, d)| {
+             let style = if d.is_empty() {
+                 Style::default().fg(app.theme.title_secondary).add_modifier(Modifier::BOLD)
+             } else {
+                 Style::default().fg(app.theme.text)
+             };
+             Row::new(vec![k.to_string(), d.to_string()]).style(style)
+        }).collect();
+
+        let table = Table::new(rows, [
+                Constraint::Length(25),
+                Constraint::Min(30),
+            ])
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .title("Keyboard Shortcuts")
+                .border_style(Style::default().fg(app.theme.title_main)));
+
+        f.render_widget(table, area);
     }
 
     if let InputMode::SaveSearch = app.input_mode {

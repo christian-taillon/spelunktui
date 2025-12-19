@@ -1034,7 +1034,21 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                      }
                 }
                 Event::Key(key) => {
-                match app_guard.input_mode {
+                    info!("Key event received: {:?}", key);
+                    // Global Key Handlers (Pre-InputMode)
+                    // Check for Ctrl + / (and variants like Ctrl + _ or Ctrl + ?)
+                    if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                        match key.code {
+                             KeyCode::Char('/') | KeyCode::Char('_') | KeyCode::Char('?') | KeyCode::Char('7') => {
+                                 app_guard.input_mode = InputMode::Help;
+                                 // Skip further processing for this key to prevent typing it
+                                 continue;
+                             }
+                             _ => {}
+                        }
+                    }
+
+                    match app_guard.input_mode {
                     InputMode::Normal => match key.code {
                         KeyCode::Char('e') => {
                             app_guard.input_mode = InputMode::Editing;

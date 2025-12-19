@@ -166,16 +166,11 @@ impl SplunkClient {
 
 fn format_query(query: &str) -> String {
     let trimmed = query.trim();
-    let mut formatted = if !trimmed.starts_with('|') {
+    if !trimmed.starts_with('|') {
         format!("| search {}", trimmed)
     } else {
         trimmed.to_string()
-    };
-
-    if !formatted.starts_with("search") {
-        formatted = format!("search {}", formatted);
     }
-    formatted
 }
 
 #[cfg(test)]
@@ -185,15 +180,15 @@ mod tests {
     #[test]
     fn test_format_query() {
         // Without pipe
-        assert_eq!(format_query("index=main"), "search | search index=main");
+        assert_eq!(format_query("index=main"), "| search index=main");
         
         // With pipe
-        assert_eq!(format_query("| datamodel Network_Traffic search"), "search | datamodel Network_Traffic search");
+        assert_eq!(format_query("| datamodel Network_Traffic search"), "| datamodel Network_Traffic search");
         
         // Already has search (though unlikely from TUI input without pipe)
-        assert_eq!(format_query("search index=main"), "search | search search index=main");
+        assert_eq!(format_query("search index=main"), "| search search index=main");
         
         // Leading whitespace
-        assert_eq!(format_query("  index=main  "), "search | search index=main");
+        assert_eq!(format_query("  index=main  "), "| search index=main");
     }
 }

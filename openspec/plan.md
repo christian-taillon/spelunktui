@@ -1,7 +1,6 @@
 # Splunk TUI OpenSpec
 
 ## Current Status
-- **Backend Replaced:** The original ThreatConnect backend has been completely replaced with a Splunk API client.
 - **Search Functionality:**
     - Create search jobs via `POST /services/search/jobs`.
     - Poll job status via `GET /services/search/jobs/{search_id}`.

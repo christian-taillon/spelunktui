@@ -1,76 +1,71 @@
 # Splunk TUI
 
-![Splunk TUI](new_tui_tc.png)
+![Splunk TUI](screenshot.png)
 
-A modern, terminal-based user interface for interacting with the Splunk Platform. This tool provides a keyboard-centric, efficient way to run searches, view results, and manage your Splunk jobs directly from your terminal.
+A modern, high-performance terminal user interface for interacting with the Splunk Platform. Built in Rust with `ratatui`, it provides a keyboard-centric workflow for running searches, managing jobs, and analyzing results without leaving your terminal.
 
-## Features
+## Key Features
 
-*   **Fast & Efficient**: Built in Rust for performance and low resource usage.
-*   **Keyboard Navigation**: Vim-like keybindings for rapid interaction.
-*   **Detailed Views**: Inspect search results with syntax highlighting and structured data views.
-*   **Search**: Powerful SPL search capabilities to find what you need quickly.
-
-## Prerequisites
-
-*   **Rust**: You need to have Rust and Cargo installed. You can install them via [rustup](https://rustup.rs/).
-*   **Splunk Credentials**: You need a Splunk Base URL and Authentication Token.
+- **SPL Editor**: Multiline search editor with Vim-mode support (`Ctrl+v`), external editor integration (`Ctrl+x`), and local search history.
+- **Job Management**: Real-time monitoring of search progress, event counts, and job status.
+- **Result Explorer**: Interactive viewing of search results with JSON syntax highlighting.
+- **Saved Searches**: Save and load your frequent queries locally (`Ctrl+w` / `Ctrl+s`).
+- **Theming**: Toggle between multiple built-in themes including a Splunk-inspired palette (`t`).
+- **Performance**: Extremely low footprint and responsive UI, even with large result sets.
 
 ## Installation
 
-1.  **Clone the repository:**
+### From Source
 
-    ```bash
-    git clone https://github.com/PicoMitchell/splunk-tui.git
-    cd splunk-tui
-    ```
-
-2.  **Configure Credentials:**
-
-    Copy the example environment file and add your credentials:
-
-    ```bash
-    cp .env.example .env
-    ```
-
-    Edit `.env` with your preferred editor and fill in your details:
-
-    ```env
-    SPLUNK_BASE_URL=https://your-splunk-instance:8089
-    SPLUNK_TOKEN=your_splunk_token
-    # Optional
-    SPLUNK_VERIFY_SSL=true
-    ```
-
-    > **Note:** This application has been tested on Linux so far. Mac and Windows support to follow.
-
-## Usage
-
-### Using Cargo (Recommended)
-
-To run the application directly with Cargo:
+Ensure you have [Rust and Cargo](https://rustup.rs/) installed:
 
 ```bash
-cargo run
+git clone https://github.com/PicoMitchell/splunk-tui.git
+cd splunk-tui
+cargo build --release
 ```
 
+The binary will be available at `./target/release/splunk-tui`.
 
+## Configuration
+
+The application can be configured via environment variables, a `.env` file, or a `config.toml` file located in your system's config directory (e.g., `~/.config/splunk-tui/config.toml`).
+
+### Environment Variables / .env
+
+Copy the example file and fill in your details:
+```bash
+cp .env.example .env
+```
+
+| Variable | Description |
+|----------|-------------|
+| `SPLUNK_BASE_URL` | Your Splunk instance URL (e.g., `https://splunk.example.com:8089`) |
+| `SPLUNK_TOKEN` | A valid Splunk Authentication Token |
+| `SPLUNK_VERIFY_SSL` | Set to `false` if using self-signed certificates (default: `true`) |
 
 ## Keybindings
 
-*   **Navigation**: `h`, `j`, `k`, `l` (Left, Down, Up, Right) or Arrow Keys.
-*   **Select/Enter**: `Enter`.
-*   **Back/Escape**: `Esc`.
-*   **Quit**: `q` or `Ctrl+c`.
-*   **Theme Toggle**: `t`.
+Splunk TUI is designed for keyboard efficiency. Press `Ctrl + /` in the app to view the full help modal.
 
-## Development
+### General
+- `q` or `Ctrl+c`: Quit
+- `t`: Cycle Themes
+- `Ctrl+/`: Show Help
 
-The project is structured as a standard Rust binary crate.
+### Search Editor
+- `Enter`: Run Search
+- `Shift+Enter`: New line (Standard mode)
+- `Ctrl+v`: Toggle Vim Mode (Normal/Insert)
+- `Ctrl+x`: Open search in external `$EDITOR`
+- `Ctrl+s`: Load Saved Search
+- `Ctrl+w`: Save Current Search
 
-*   **Run Tests**: `cargo test`
-*   **Build Release**: `cargo build --release`
+### Results & Navigation
+- `h`, `j`, `k`, `l` or Arrows: Navigate results
+- `Shift+e`: Open search job in browser
+- `Ctrl+k`: Kill current search job
 
-## Legacy Python Tool
+## License
 
-The previous Python-based CLI tool has been moved to the `legacy/` directory.
+Distributed under the MIT License. See `LICENSE` for more information.

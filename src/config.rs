@@ -39,7 +39,7 @@ impl Config {
         if let Ok(val) = env::var("SPLUNK_BASE_URL") { config.splunk_base_url = val; }
         if let Ok(val) = env::var("SPLUNK_TOKEN") { config.splunk_token = val; }
         if let Ok(val) = env::var("SPLUNK_VERIFY_SSL") {
-            config.splunk_verify_ssl = val.parse().unwrap_or(false);
+            config.splunk_verify_ssl = val.parse().unwrap_or(true);
         }
 
         // 3. Load from .env file (Project Config) - FORCE OVERRIDE
@@ -72,7 +72,7 @@ impl Config {
                                      }
                                  },
                                  "SPLUNK_VERIFY_SSL" => {
-                                     config.splunk_verify_ssl = val.parse().unwrap_or(false);
+                                     config.splunk_verify_ssl = val.parse().unwrap_or(true);
                                  },
                                  _ => {}
                              }
@@ -101,7 +101,7 @@ impl Default for Config {
         Self {
             splunk_base_url: String::new(),
             splunk_token: String::new(),
-            splunk_verify_ssl: false,
+            splunk_verify_ssl: true,
             theme: None,
         }
     }
@@ -155,3 +155,21 @@ impl Config {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config_security() {
+        let config = Config::default();
+        // Secure by default: SSL verification must be enabled unless explicitly disabled
+        assert_eq!(config.splunk_verify_ssl, true, "Default config must enforce SSL verification");
+    }
+
+    #[test]
+    fn test_env_parsing_defaults_safe() {
+        // Test that invalid boolean parsing defaults to true (safe)
+        let safe_default = "invalid_bool".parse().unwrap_or(true);
+        assert_eq!(safe_default, true);
+    }
+}

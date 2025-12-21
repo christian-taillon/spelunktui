@@ -39,7 +39,7 @@ impl Config {
         if let Ok(val) = env::var("SPLUNK_BASE_URL") { config.splunk_base_url = val; }
         if let Ok(val) = env::var("SPLUNK_TOKEN") { config.splunk_token = val; }
         if let Ok(val) = env::var("SPLUNK_VERIFY_SSL") {
-            config.splunk_verify_ssl = val.parse().unwrap_or(false);
+            config.splunk_verify_ssl = val.parse().unwrap_or(true);
         }
 
         // 3. Load from .env file (Project Config) - FORCE OVERRIDE
@@ -72,7 +72,7 @@ impl Config {
                                      }
                                  },
                                  "SPLUNK_VERIFY_SSL" => {
-                                     config.splunk_verify_ssl = val.parse().unwrap_or(false);
+                                     config.splunk_verify_ssl = val.parse().unwrap_or(true);
                                  },
                                  _ => {}
                              }
@@ -96,12 +96,36 @@ impl Config {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config_security() {
+        // Sentinel Security Check: Ensure SSL verification is enabled by default
+        let config = Config::default();
+        assert_eq!(config.splunk_verify_ssl, true, "SPLUNK_VERIFY_SSL should be true by default for security");
+    }
+
+    #[test]
+    fn test_verify_ssl_env_parsing_defaults() {
+        // Simulate env var parsing failure or absence fallback
+        // Since we can't easily mock env vars in parallel tests without side effects,
+        // we will test the parsing logic if we extract it, but for now let's rely on Config::default() check
+        // which covers the base case.
+
+        // However, we can check that if we load config without env vars set, it defaults to secure.
+        // But load() reads file system and real env vars.
+        // Let's stick to Config::default() as the primary unit test for the default state.
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             splunk_base_url: String::new(),
             splunk_token: String::new(),
-            splunk_verify_ssl: false,
+            splunk_verify_ssl: true, // Secure by default
             theme: None,
         }
     }

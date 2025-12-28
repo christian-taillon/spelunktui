@@ -6,7 +6,7 @@ use std::env;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct Config {
     pub splunk_base_url: String,
     pub splunk_token: String,
@@ -55,33 +55,31 @@ impl Config {
             info!("Loading .env file from: {:?}", dotenv_path);
             if let Ok(file) = File::open(dotenv_path) {
                 let reader = BufReader::new(file);
-                for line in reader.lines() {
-                    if let Ok(l) = line {
-                        let l = l.trim();
-                        if l.starts_with('#') || l.is_empty() {
-                            continue;
-                        }
-                        if let Some((key, val)) = l.split_once('=') {
-                            let key = key.trim();
-                            let val = val.trim().trim_matches('"').trim_matches('\''); // Simple unquote
+                for l in reader.lines().map_while(Result::ok) {
+                    let l = l.trim();
+                    if l.starts_with('#') || l.is_empty() {
+                        continue;
+                    }
+                    if let Some((key, val)) = l.split_once('=') {
+                        let key = key.trim();
+                        let val = val.trim().trim_matches('"').trim_matches('\''); // Simple unquote
 
-                            match key {
-                                "SPLUNK_BASE_URL" => {
-                                    if config.splunk_base_url != val {
-                                        warn!("Overriding SPLUNK_BASE_URL from .env file: '{}' (was '{}')", val, config.splunk_base_url);
-                                        config.splunk_base_url = val.to_string();
-                                    }
+                        match key {
+                            "SPLUNK_BASE_URL" => {
+                                if config.splunk_base_url != val {
+                                    warn!("Overriding SPLUNK_BASE_URL from .env file: '{}' (was '{}')", val, config.splunk_base_url);
+                                    config.splunk_base_url = val.to_string();
                                 }
-                                "SPLUNK_TOKEN" => {
-                                    if !val.is_empty() {
-                                        config.splunk_token = val.to_string();
-                                    }
-                                }
-                                "SPLUNK_VERIFY_SSL" => {
-                                    config.splunk_verify_ssl = val.parse().unwrap_or(false);
-                                }
-                                _ => {}
                             }
+                            "SPLUNK_TOKEN" => {
+                                if !val.is_empty() {
+                                    config.splunk_token = val.to_string();
+                                }
+                            }
+                            "SPLUNK_VERIFY_SSL" => {
+                                config.splunk_verify_ssl = val.parse().unwrap_or(false);
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -99,17 +97,6 @@ impl Config {
             anyhow::bail!("SPLUNK_TOKEN is missing.");
         }
         Ok(())
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            splunk_base_url: String::new(),
-            splunk_token: String::new(),
-            splunk_verify_ssl: false,
-            theme: None,
-        }
     }
 }
 

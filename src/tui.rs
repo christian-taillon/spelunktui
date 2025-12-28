@@ -31,7 +31,6 @@ use tokio::sync::Mutex;
 fn is_inside(rect: Rect, col: u16, row: u16) -> bool {
     col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }
-use chrono;
 use log::{error, info};
 use syntect::highlighting::FontStyle;
 use syntect::{
@@ -464,7 +463,7 @@ impl App {
 
         if let Ok(mut file) = File::create(&file_path) {
             if file.write_all(self.input.as_bytes()).is_ok() {
-                self.status_message = format!("Editing query in external editor...");
+                self.status_message = "Editing query in external editor...".to_string();
                 self.editor_file_path = Some(file_path);
                 self.should_open_editor = true;
             }
@@ -1058,8 +1057,8 @@ async fn run_loop<B: Backend + std::io::Write>(
                                 let line = lines[target_line_idx];
                                 // Calculate byte offset up to this line
                                 let mut offset = 0;
-                                for i in 0..target_line_idx {
-                                    offset += lines[i].len() + 1; // +1 for newline
+                                for line in lines.iter().take(target_line_idx) {
+                                    offset += line.len() + 1; // +1 for newline
                                 }
 
                                 // Add column offset (clamped to line length)

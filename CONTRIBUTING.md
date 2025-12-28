@@ -7,8 +7,8 @@ Thank you for your interest in contributing to Splunk TUI! We welcome contributi
 1.  **Fork the repository** on GitHub.
 2.  **Clone your fork** locally:
     ```bash
-    git clone https://github.com/YOUR_USERNAME/splunk-tui.git
-    cd splunk-tui
+    git clone https://github.com/YOUR_USERNAME/spelunktui.git
+    cd spelunktui
     ```
 3.  **Install dependencies**:
     Ensure you have [Rust and Cargo](https://rustup.rs/) installed.
@@ -58,4 +58,4 @@ If you find a bug or have a feature request, please [open an issue](https://gith
 
 ## License
 
-By contributing to Splunk TUI, you agree that your contributions will be licensed under the project's [MIT License](LICENSE).
+By contributing to Splunk TUI, you agree that your contributions will be licensed under the project's [GNU General Public License v3.0](LICENSE).

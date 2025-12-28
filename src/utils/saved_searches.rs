@@ -1,8 +1,8 @@
-use std::fs;
-use std::path::PathBuf;
-use std::io;
 #[cfg(not(test))]
 use directories::ProjectDirs;
+use std::fs;
+use std::io;
+use std::path::PathBuf;
 
 pub struct SavedSearchManager;
 
@@ -11,11 +11,11 @@ impl SavedSearchManager {
     fn get_storage_dir() -> PathBuf {
         // Try ~/.config/splunk-tui/saved_searches using directories crate
         if let Some(proj_dirs) = ProjectDirs::from("", "", "splunk-tui") {
-             let mut path = proj_dirs.config_dir().to_path_buf();
-             path.push("saved_searches");
-             if fs::create_dir_all(&path).is_ok() {
-                 return path;
-             }
+            let mut path = proj_dirs.config_dir().to_path_buf();
+            path.push("saved_searches");
+            if fs::create_dir_all(&path).is_ok() {
+                return path;
+            }
         }
 
         // Fallback to local directory

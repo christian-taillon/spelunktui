@@ -1,39 +1,44 @@
+use crate::api::SplunkClient;
+use crate::config::Config;
+use crate::models::splunk::JobStatus;
+use crate::utils::saved_searches::SavedSearchManager;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseEventKind, MouseButton},
     cursor::SetCursorStyle,
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseButton, MouseEventKind,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
     backend::{Backend, CrosstermBackend},
-    layout::{Constraint, Direction, Layout, Alignment, Rect},
-    style::{Color, Style, Modifier},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Padding, BorderType, Wrap, List, ListItem, ListState, Table, Row, TableState, Sparkline},
+    widgets::{
+        Block, BorderType, Borders, List, ListItem, ListState, Padding, Paragraph, Row, Sparkline,
+        Table, TableState, Wrap,
+    },
     Frame, Terminal,
 };
-use std::{error::Error, io, sync::Arc};
-use std::process::{Command, Stdio};
+use serde_json::Value;
 use std::fs::File;
 use std::io::Write;
+use std::process::{Command, Stdio};
+use std::{error::Error, io, sync::Arc};
 use tokio::sync::Mutex;
-use crate::api::SplunkClient;
-use crate::models::splunk::JobStatus;
-use crate::utils::saved_searches::SavedSearchManager;
-use crate::config::Config;
-use serde_json::Value;
 
 fn is_inside(rect: Rect, col: u16, row: u16) -> bool {
     col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }
-use log::{info, error};
 use chrono;
+use log::{error, info};
+use syntect::highlighting::FontStyle;
 use syntect::{
+    easy::HighlightLines,
     highlighting::{Theme, ThemeSet},
     parsing::SyntaxSet,
-    easy::HighlightLines,
 };
-use syntect::highlighting::FontStyle;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum ThemeVariant {
@@ -127,7 +132,7 @@ impl AppTheme {
             border: Color::Rgb(0, 255, 0), // Inactive Pill BG (Lime)
             text: Color::White,
             input_edit: Color::Rgb(255, 20, 147), // Active Pill BG (DeepPink)
-            title_main: Color::Rgb(0, 255, 0), // Lime
+            title_main: Color::Rgb(0, 255, 0),    // Lime
             title_secondary: Color::Cyan,
             summary_highlight: Color::Rgb(255, 20, 147), // DeepPink
             owner_label: Color::Rgb(0, 255, 0),
@@ -255,11 +260,13 @@ impl App {
             theme_set,
             syntax_theme,
             cached_detail: ratatui::text::Text::default(),
-                search_area: Rect::default(),
-                main_area: Rect::default(),
-                detail_area: Rect::default(),
+            search_area: Rect::default(),
+            main_area: Rect::default(),
+            detail_area: Rect::default(),
             client,
-            status_message: String::from("Press 'q' to quit, 'e' to enter search mode, 't' to toggle theme."),
+            status_message: String::from(
+                "Press 'q' to quit, 'e' to enter search mode, 't' to toggle theme.",
+            ),
             theme: AppTheme::default_theme(),
             view_mode: ViewMode::Table,
             view_focus: ViewFocus::Search,
@@ -295,7 +302,7 @@ impl App {
 
     fn perform_local_search(&mut self) {
         if self.local_search_query.trim().is_empty() {
-             return;
+            return;
         }
 
         self.search_matches.clear();
@@ -303,11 +310,12 @@ impl App {
 
         let pattern = match regex::RegexBuilder::new(&self.local_search_query)
             .case_insensitive(true)
-            .build() {
+            .build()
+        {
             Ok(re) => re,
             Err(e) => {
-                 self.status_message = format!("Invalid Regex: {}", e);
-                 return;
+                self.status_message = format!("Invalid Regex: {}", e);
+                return;
             }
         };
 
@@ -322,9 +330,13 @@ impl App {
         if self.search_matches.is_empty() {
             self.status_message = format!("No matches found for '{}'", self.local_search_query);
         } else {
-             self.current_match_index = Some(0);
-             self.jump_to_match(0);
-             self.status_message = format!("Found {} matches. (1/{})", self.search_matches.len(), self.search_matches.len());
+            self.current_match_index = Some(0);
+            self.jump_to_match(0);
+            self.status_message = format!(
+                "Found {} matches. (1/{})",
+                self.search_matches.len(),
+                self.search_matches.len()
+            );
         }
     }
 
@@ -435,7 +447,8 @@ impl App {
         let file_path = temp_dir.to_str().unwrap().to_string();
 
         if let Ok(mut file) = File::create(&file_path) {
-            let json_content = serde_json::to_string_pretty(&self.search_results).unwrap_or_default();
+            let json_content =
+                serde_json::to_string_pretty(&self.search_results).unwrap_or_default();
             if file.write_all(json_content.as_bytes()).is_ok() {
                 self.status_message = format!("Saved to {}. Opening...", file_path);
                 self.editor_file_path = Some(file_path);
@@ -462,10 +475,10 @@ impl App {
         if let Some(sid) = &self.current_job_sid {
             let url = self.client.get_shareable_url(sid);
             if url.starts_with("http") {
-                 let _ = open::that(url);
-                 self.status_message = String::from("Opened URL in browser.");
+                let _ = open::that(url);
+                self.status_message = String::from("Opened URL in browser.");
             } else {
-                 self.status_message = String::from("Invalid URL.");
+                self.status_message = String::from("Invalid URL.");
             }
         } else {
             self.status_message = String::from("No active job URL.");
@@ -480,7 +493,7 @@ impl App {
 
     fn scroll_down_fast(&mut self) {
         if !self.search_results.is_empty() {
-             self.scroll_offset = self.scroll_offset.saturating_add(10);
+            self.scroll_offset = self.scroll_offset.saturating_add(10);
         }
     }
 
@@ -500,30 +513,30 @@ impl App {
         self.theme = match theme_name {
             "Default" => {
                 if let Some(t) = self.theme_set.themes.get("base16-ocean.dark") {
-                     self.syntax_theme = t.clone();
+                    self.syntax_theme = t.clone();
                 }
                 AppTheme::default_theme()
-            },
+            }
             "ColorPop" => {
                 if let Some(t) = self.theme_set.themes.get("base16-eighties.dark") {
                     self.syntax_theme = t.clone();
                 }
                 AppTheme::color_pop()
-            },
+            }
             "Splunk" => {
                 if let Some(t) = self.theme_set.themes.get("base16-mocha.dark") {
                     self.syntax_theme = t.clone();
                 } else if let Some(t) = self.theme_set.themes.get("InspiredGitHub") {
-                     self.syntax_theme = t.clone();
+                    self.syntax_theme = t.clone();
                 }
                 AppTheme::splunk()
-            },
+            }
             "Neon" => {
                 if let Some(t) = self.theme_set.themes.get("base16-ocean.dark") {
-                     self.syntax_theme = t.clone();
+                    self.syntax_theme = t.clone();
                 }
                 AppTheme::neon()
-            },
+            }
             _ => AppTheme::default_theme(),
         };
         self.update_detail_view();
@@ -550,7 +563,8 @@ impl App {
         } else {
             self.input_mode = InputMode::SaveSearch;
             self.save_search_name.clear();
-            self.status_message = String::from("Enter name for saved search (Enter to save, Esc to cancel):");
+            self.status_message =
+                String::from("Enter name for saved search (Enter to save, Esc to cancel):");
         }
     }
 
@@ -572,7 +586,7 @@ impl App {
 
     fn overwrite_current_search(&mut self) {
         if let Some(name) = self.current_saved_search_name.clone() {
-             if let Err(e) = SavedSearchManager::save_search(&name, &self.input) {
+            if let Err(e) = SavedSearchManager::save_search(&name, &self.input) {
                 self.status_message = format!("Failed to save search: {}", e);
             } else {
                 self.status_message = format!("Search '{}' overwritten.", name);
@@ -591,7 +605,8 @@ impl App {
                 self.saved_searches = searches;
                 self.input_mode = InputMode::LoadSearch;
                 self.saved_search_list_state.select(Some(0));
-                self.status_message = String::from("Select saved search (Enter to load, Esc to cancel):");
+                self.status_message =
+                    String::from("Select saved search (Enter to load, Esc to cancel):");
             }
             Err(e) => {
                 self.status_message = format!("Failed to list saved searches: {}", e);
@@ -666,12 +681,12 @@ impl App {
 
     fn move_cursor_right(&mut self) {
         if self.cursor_position < self.input.len() {
-             // Find start of next char
-             let mut new_pos = self.cursor_position + 1;
-             while new_pos < self.input.len() && !self.input.is_char_boundary(new_pos) {
-                 new_pos += 1;
-             }
-             self.cursor_position = new_pos;
+            // Find start of next char
+            let mut new_pos = self.cursor_position + 1;
+            while new_pos < self.input.len() && !self.input.is_char_boundary(new_pos) {
+                new_pos += 1;
+            }
+            self.cursor_position = new_pos;
         }
     }
 
@@ -687,7 +702,10 @@ impl App {
 
             // Find the newline BEFORE that one to identify the previous line.
             let text_before_prev_line = &self.input[..last_nl_idx];
-            let prev_line_start = text_before_prev_line.rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let prev_line_start = text_before_prev_line
+                .rfind('\n')
+                .map(|i| i + 1)
+                .unwrap_or(0);
 
             let prev_line_len = last_nl_idx - prev_line_start;
             let new_col = col.min(prev_line_len);
@@ -712,7 +730,9 @@ impl App {
 
             // Find end of next line
             let text_after_next_line = &self.input[next_line_start..];
-            let next_line_end_rel = text_after_next_line.find('\n').unwrap_or(text_after_next_line.len());
+            let next_line_end_rel = text_after_next_line
+                .find('\n')
+                .unwrap_or(text_after_next_line.len());
             let next_line_len = next_line_end_rel;
 
             let new_col = col.min(next_line_len);
@@ -748,7 +768,7 @@ impl App {
             if let Some(item) = self.search_results.get(selected_idx) {
                 self.cached_detail = render_yaml_detail(&self.syntax_set, &self.syntax_theme, item);
             } else {
-                 self.cached_detail = ratatui::text::Text::from("Select an event...");
+                self.cached_detail = ratatui::text::Text::from("Select an event...");
             }
         }
     }
@@ -765,7 +785,11 @@ pub async fn run_app() -> Result<(), Box<dyn Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let client = Arc::new(SplunkClient::new(config.splunk_base_url, config.splunk_token, config.splunk_verify_ssl));
+    let client = Arc::new(SplunkClient::new(
+        config.splunk_base_url,
+        config.splunk_token,
+        config.splunk_verify_ssl,
+    ));
     let app = Arc::new(Mutex::new(App::new(client)));
 
     let res = run_loop(&mut terminal, app).await;
@@ -786,7 +810,10 @@ pub async fn run_app() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: Arc<Mutex<App>>) -> io::Result<()> {
+async fn run_loop<B: Backend + std::io::Write>(
+    terminal: &mut Terminal<B>,
+    app: Arc<Mutex<App>>,
+) -> io::Result<()> {
     let tick_rate = std::time::Duration::from_millis(250);
     let mut last_tick = std::time::Instant::now();
 
@@ -802,7 +829,11 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                 drop(app_guard);
 
                 disable_raw_mode()?;
-                execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+                execute!(
+                    terminal.backend_mut(),
+                    LeaveAlternateScreen,
+                    DisableMouseCapture
+                )?;
                 terminal.show_cursor()?;
 
                 let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
@@ -814,7 +845,11 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                     .status();
 
                 enable_raw_mode()?;
-                execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+                execute!(
+                    terminal.backend_mut(),
+                    EnterAlternateScreen,
+                    EnableMouseCapture
+                )?;
                 terminal.hide_cursor()?;
                 terminal.clear()?;
 
@@ -879,25 +914,28 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                                         let mut app = app_clone.lock().await;
                                         app.search_results = results;
                                         app.results_fetched = true;
-                                        app.status_message = format!("Loaded {} results.", app.search_results.len());
+                                        app.status_message =
+                                            format!("Loaded {} results.", app.search_results.len());
                                         app.is_status_fetching = false;
                                         if app.view_mode == ViewMode::Table {
                                             app.update_detail_view();
                                         }
-                                    },
+                                    }
                                     Err(e) => {
                                         let mut app = app_clone.lock().await;
                                         error!("Failed to fetch results for job {}: {}", sid, e);
-                                        app.status_message = format!("Failed to fetch results: {}", e);
+                                        app.status_message =
+                                            format!("Failed to fetch results: {}", e);
                                         app.is_status_fetching = false;
                                     }
                                 }
                             } else {
                                 // Not done
-                                app.status_message = format!("Job running... Dispatched: {}", status.dispatch_state);
+                                app.status_message =
+                                    format!("Job running... Dispatched: {}", status.dispatch_state);
                                 app.is_status_fetching = false;
                             }
-                        },
+                        }
                         Err(e) => {
                             let mut app = app_clone.lock().await;
                             error!("Failed to check status for job {}: {}", sid, e);
@@ -917,348 +955,439 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
             let evt = event::read()?;
             match evt {
                 Event::Mouse(mouse_event) => {
-                     match mouse_event.kind {
-                         MouseEventKind::ScrollDown => {
-                             if let ViewFocus::Search = app_guard.view_focus {
-                                 let line_count = app_guard.input.lines().count();
-                                 let max_scroll = line_count.saturating_sub(3); // 3 lines visible (header height 5)
-                                 if app_guard.input_scroll < max_scroll as u16 {
-                                     app_guard.input_scroll = app_guard.input_scroll.saturating_add(1);
-                                 }
-                             } else {
-                                 match app_guard.view_mode {
-                                     ViewMode::RawEvents => app_guard.scroll_down(),
-                                     ViewMode::Table => {
-                                         match app_guard.view_focus {
-                                             ViewFocus::ContentList => {
+                    match mouse_event.kind {
+                        MouseEventKind::ScrollDown => {
+                            if let ViewFocus::Search = app_guard.view_focus {
+                                let line_count = app_guard.input.lines().count();
+                                let max_scroll = line_count.saturating_sub(3); // 3 lines visible (header height 5)
+                                if app_guard.input_scroll < max_scroll as u16 {
+                                    app_guard.input_scroll =
+                                        app_guard.input_scroll.saturating_add(1);
+                                }
+                            } else {
+                                match app_guard.view_mode {
+                                    ViewMode::RawEvents => app_guard.scroll_down(),
+                                    ViewMode::Table => {
+                                        match app_guard.view_focus {
+                                            ViewFocus::ContentList => {
                                                 // Scroll table
                                                 let next = match app_guard.table_state.selected() {
-                                                     Some(i) => {
-                                                         if i >= app_guard.search_results.len().saturating_sub(1) {
-                                                             i // Stop at bottom (no wrap)
-                                                         } else {
-                                                             i + 1
-                                                         }
-                                                     }
-                                                     None => 0,
-                                                 };
-                                                 if !app_guard.search_results.is_empty() {
-                                                     app_guard.table_state.select(Some(next));
-                                                     app_guard.detail_scroll = 0;
-                                                     app_guard.update_detail_view();
-                                                 }
-                                             },
-                                             ViewFocus::ContentDetail => {
-                                                 app_guard.detail_scroll = app_guard.detail_scroll.saturating_add(1);
-                                             },
-                                             _ => {}
-                                         }
-                                     }
-                                 }
-                             }
-                         }
-                         MouseEventKind::ScrollUp => {
-                             if let ViewFocus::Search = app_guard.view_focus {
-                                 app_guard.input_scroll = app_guard.input_scroll.saturating_sub(1);
-                             } else {
-                                 match app_guard.view_mode {
-                                     ViewMode::RawEvents => app_guard.scroll_up(),
-                                     ViewMode::Table => {
-                                         match app_guard.view_focus {
-                                             ViewFocus::ContentList => {
-                                                 let prev = match app_guard.table_state.selected() {
-                                                     Some(i) => {
-                                                         if i == 0 {
-                                                             0 // Stop at top (no wrap)
-                                                         } else {
-                                                             i - 1
-                                                         }
-                                                     }
-                                                     None => 0,
-                                                 };
-                                                 if !app_guard.search_results.is_empty() {
-                                                     app_guard.table_state.select(Some(prev));
-                                                     app_guard.detail_scroll = 0;
-                                                     app_guard.update_detail_view();
-                                                 }
-                                             },
-                                             ViewFocus::ContentDetail => {
-                                                 app_guard.detail_scroll = app_guard.detail_scroll.saturating_sub(1);
-                                             },
-                                             _ => {}
-                                         }
-                                     }
-                                 }
-                             }
-                         }
-                         _ => {}
-                     }
-                     if let MouseEventKind::Down(MouseButton::Left) = mouse_event.kind {
-                         let col = mouse_event.column;
-                         let row = mouse_event.row;
+                                                    Some(i) => {
+                                                        if i >= app_guard
+                                                            .search_results
+                                                            .len()
+                                                            .saturating_sub(1)
+                                                        {
+                                                            i // Stop at bottom (no wrap)
+                                                        } else {
+                                                            i + 1
+                                                        }
+                                                    }
+                                                    None => 0,
+                                                };
+                                                if !app_guard.search_results.is_empty() {
+                                                    app_guard.table_state.select(Some(next));
+                                                    app_guard.detail_scroll = 0;
+                                                    app_guard.update_detail_view();
+                                                }
+                                            }
+                                            ViewFocus::ContentDetail => {
+                                                app_guard.detail_scroll =
+                                                    app_guard.detail_scroll.saturating_add(1);
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        MouseEventKind::ScrollUp => {
+                            if let ViewFocus::Search = app_guard.view_focus {
+                                app_guard.input_scroll = app_guard.input_scroll.saturating_sub(1);
+                            } else {
+                                match app_guard.view_mode {
+                                    ViewMode::RawEvents => app_guard.scroll_up(),
+                                    ViewMode::Table => {
+                                        match app_guard.view_focus {
+                                            ViewFocus::ContentList => {
+                                                let prev = match app_guard.table_state.selected() {
+                                                    Some(i) => {
+                                                        if i == 0 {
+                                                            0 // Stop at top (no wrap)
+                                                        } else {
+                                                            i - 1
+                                                        }
+                                                    }
+                                                    None => 0,
+                                                };
+                                                if !app_guard.search_results.is_empty() {
+                                                    app_guard.table_state.select(Some(prev));
+                                                    app_guard.detail_scroll = 0;
+                                                    app_guard.update_detail_view();
+                                                }
+                                            }
+                                            ViewFocus::ContentDetail => {
+                                                app_guard.detail_scroll =
+                                                    app_guard.detail_scroll.saturating_sub(1);
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    if let MouseEventKind::Down(MouseButton::Left) = mouse_event.kind {
+                        let col = mouse_event.column;
+                        let row = mouse_event.row;
 
-                         if is_inside(app_guard.search_area, col, row) {
-                             app_guard.view_focus = ViewFocus::Search;
-                             app_guard.input_mode = InputMode::Editing;
+                        if is_inside(app_guard.search_area, col, row) {
+                            app_guard.view_focus = ViewFocus::Search;
+                            app_guard.input_mode = InputMode::Editing;
 
-                             // Calculate cursor position from mouse click
-                             let rel_x = col.saturating_sub(app_guard.search_area.x + 1); // +1 for border
-                             let rel_y = row.saturating_sub(app_guard.search_area.y + 1); // +1 for border
+                            // Calculate cursor position from mouse click
+                            let rel_x = col.saturating_sub(app_guard.search_area.x + 1); // +1 for border
+                            let rel_y = row.saturating_sub(app_guard.search_area.y + 1); // +1 for border
 
-                             let target_line_idx = (rel_y + app_guard.input_scroll) as usize;
-                             let target_col_idx = (rel_x + app_guard.input_scroll_x) as usize;
+                            let target_line_idx = (rel_y + app_guard.input_scroll) as usize;
+                            let target_col_idx = (rel_x + app_guard.input_scroll_x) as usize;
 
-                             let lines: Vec<&str> = app_guard.input.lines().collect();
-                             if target_line_idx < lines.len() {
-                                 let line = lines[target_line_idx];
-                                 // Calculate byte offset up to this line
-                                 let mut offset = 0;
-                                 for i in 0..target_line_idx {
-                                     offset += lines[i].len() + 1; // +1 for newline
-                                 }
+                            let lines: Vec<&str> = app_guard.input.lines().collect();
+                            if target_line_idx < lines.len() {
+                                let line = lines[target_line_idx];
+                                // Calculate byte offset up to this line
+                                let mut offset = 0;
+                                for i in 0..target_line_idx {
+                                    offset += lines[i].len() + 1; // +1 for newline
+                                }
 
-                                 // Add column offset (clamped to line length)
-                                 let col_bytes = line.chars().take(target_col_idx).map(|c| c.len_utf8()).sum::<usize>();
-                                 offset += col_bytes.min(line.len());
+                                // Add column offset (clamped to line length)
+                                let col_bytes = line
+                                    .chars()
+                                    .take(target_col_idx)
+                                    .map(|c| c.len_utf8())
+                                    .sum::<usize>();
+                                offset += col_bytes.min(line.len());
 
-                                 app_guard.cursor_position = offset;
-                             } else if !lines.is_empty() {
-                                 // Clicked below text, move to end
-                                 app_guard.cursor_position = app_guard.input.len();
-                             }
-                         } else if is_inside(app_guard.main_area, col, row) {
-                             app_guard.view_focus = ViewFocus::ContentList;
-                         } else if is_inside(app_guard.detail_area, col, row) {
-                             app_guard.view_focus = ViewFocus::ContentDetail;
-                         }
-                     }
+                                app_guard.cursor_position = offset;
+                            } else if !lines.is_empty() {
+                                // Clicked below text, move to end
+                                app_guard.cursor_position = app_guard.input.len();
+                            }
+                        } else if is_inside(app_guard.main_area, col, row) {
+                            app_guard.view_focus = ViewFocus::ContentList;
+                        } else if is_inside(app_guard.detail_area, col, row) {
+                            app_guard.view_focus = ViewFocus::ContentDetail;
+                        }
+                    }
                 }
                 Event::Key(key) => {
                     info!("Key event received: {:?}", key);
                     // Global Key Handlers (Pre-InputMode)
                     // Check for Ctrl + / (and variants like Ctrl + _ or Ctrl + ?)
-                    if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                    if key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL)
+                    {
                         match key.code {
-                             KeyCode::Char('/') | KeyCode::Char('_') | KeyCode::Char('?') | KeyCode::Char('7') => {
-                                 app_guard.input_mode = InputMode::Help;
-                                 // Skip further processing for this key to prevent typing it
-                                 continue;
-                             }
-                             _ => {}
+                            KeyCode::Char('/')
+                            | KeyCode::Char('_')
+                            | KeyCode::Char('?')
+                            | KeyCode::Char('7') => {
+                                app_guard.input_mode = InputMode::Help;
+                                // Skip further processing for this key to prevent typing it
+                                continue;
+                            }
+                            _ => {}
                         }
                     }
 
                     match app_guard.input_mode {
-                    InputMode::Normal => match key.code {
-                        KeyCode::Char('e') => {
-                            app_guard.input_mode = InputMode::Editing;
-                            app_guard.status_message = String::from("Editing... Press Enter to search, Esc to cancel.");
-                            // If re-entering, ensure cursor is valid
-                            app_guard.clamp_cursor();
-                        }
-                        KeyCode::Char('t') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                            app_guard.toggle_theme_selector();
-                        }
-                        // Help
-                        KeyCode::Char('/') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                             app_guard.input_mode = InputMode::Help;
-                        }
-                        KeyCode::Char('t') => {
-                            app_guard.toggle_theme_selector();
-                        }
-                        KeyCode::Char('q') => {
-                            return Ok(());
-                        }
-                        KeyCode::Char('k') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                             app_guard.scroll_up_fast();
-                        }
-                        KeyCode::Char('x') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                             app_guard.open_in_editor();
-                        }
-                        // Rebind Clear to ^R (Reset) to free ^L for Fast Scroll
-                        KeyCode::Char('r') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                             app_guard.clear_results();
-                        }
-                        // Fast Scroll
-                        KeyCode::Char('j') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                             app_guard.scroll_down_fast();
-                        }
-                        KeyCode::Char('l') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                             app_guard.initiate_load_search();
-                        }
-                        // Open URL
-                        KeyCode::Char('E') if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) => {
-                             app_guard.open_job_url();
-                        }
-                        // Saved Searches
-                        KeyCode::Char('s') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                             app_guard.initiate_save_search();
-                        }
-
-                        // Toggle View Mode (Ctrl+v OR Ctrl+m)
-                        KeyCode::Char('v') | KeyCode::Char('m') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                            match app_guard.view_mode {
-                                ViewMode::RawEvents => {
-                                    app_guard.view_mode = ViewMode::Table;
-                                    // Sync selection from scroll_offset
-                                    let idx = app_guard.scroll_offset as usize;
-                                    if idx < app_guard.search_results.len() {
-                                        app_guard.table_state.select(Some(idx));
-                                        app_guard.update_detail_view();
-                                    } else if !app_guard.search_results.is_empty() {
-                                        app_guard.table_state.select(Some(0));
-                                        app_guard.update_detail_view();
-                                    }
-                                }
-                                ViewMode::Table => {
-                                    app_guard.view_mode = ViewMode::RawEvents;
-                                    // Sync scroll_offset from table selection
-                                    if let Some(idx) = app_guard.table_state.selected() {
-                                        app_guard.scroll_offset = idx as u16; // Warning: truncation if > u16
-                                    }
-                                }
+                        InputMode::Normal => match key.code {
+                            KeyCode::Char('e') => {
+                                app_guard.input_mode = InputMode::Editing;
+                                app_guard.status_message = String::from(
+                                    "Editing... Press Enter to search, Esc to cancel.",
+                                );
+                                // If re-entering, ensure cursor is valid
+                                app_guard.clamp_cursor();
                             }
-                            app_guard.status_message = format!("Switched to {:?} mode.", app_guard.view_mode);
-                        }
-
-                        // Local Search Trigger
-                        KeyCode::Char('/') => {
-                            app_guard.input_mode = InputMode::LocalSearch;
-                            app_guard.local_search_query.clear();
-                            app_guard.status_message = String::from("Enter regex search query...");
-                        }
-
-                        // Local Search Navigation
-                        KeyCode::Char('n') => {
-                            app_guard.next_match();
-                        }
-                        KeyCode::Char('N') => {
-                            app_guard.prev_match();
-                        }
-
-                        KeyCode::Tab => {
-                            app_guard.view_focus = match app_guard.view_focus {
-                                ViewFocus::Search => ViewFocus::ContentList,
-                                ViewFocus::ContentList => {
-                                    if app_guard.view_mode == ViewMode::Table {
-                                        ViewFocus::ContentDetail
-                                    } else {
-                                        ViewFocus::Search
-                                    }
-                                },
-                                ViewFocus::ContentDetail => ViewFocus::Search,
-                            };
-                        }
-
-                        KeyCode::Left | KeyCode::Char('h') => {
-                            app_guard.view_focus = ViewFocus::ContentList;
-                        }
-
-                        KeyCode::Right | KeyCode::Char('l') if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                             if app_guard.view_mode == ViewMode::Table {
-                                 app_guard.view_focus = ViewFocus::ContentDetail;
-                             }
-                        }
-
-                        KeyCode::Down | KeyCode::Char('j') if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                             if let ViewFocus::Search = app_guard.view_focus {
-                                 // Optional: Down from Search goes to Content
-                                 app_guard.view_focus = ViewFocus::ContentList;
-                             } else {
-                                 match app_guard.view_mode {
-                                     ViewMode::RawEvents => app_guard.scroll_down(),
-                                     ViewMode::Table => {
-                                         match app_guard.view_focus {
-                                             ViewFocus::ContentList => {
-                                                 let next = match app_guard.table_state.selected() {
-                                                     Some(i) => {
-                                                         if i >= app_guard.search_results.len().saturating_sub(1) {
-                                                             i // No wrap
-                                                         } else {
-                                                             i + 1
-                                                         }
-                                                     }
-                                                     None => 0,
-                                                 };
-                                                 if !app_guard.search_results.is_empty() {
-                                                     app_guard.table_state.select(Some(next));
-                                                     app_guard.detail_scroll = 0; // Reset detail scroll on row change
-                                                     app_guard.update_detail_view();
-                                                 }
-                                             }
-                                             ViewFocus::ContentDetail => {
-                                                 app_guard.detail_scroll = app_guard.detail_scroll.saturating_add(1);
-                                             }
-                                             _ => {}
-                                         }
-                                     }
-                                 }
-                             }
-                        }
-                        KeyCode::Up | KeyCode::Char('k') if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                             match app_guard.view_mode {
-                                 ViewMode::RawEvents => app_guard.scroll_up(),
-                                 ViewMode::Table => {
-                                     match app_guard.view_focus {
-                                         ViewFocus::ContentList => {
-                                             let prev = match app_guard.table_state.selected() {
-                                                 Some(i) => {
-                                                     if i == 0 {
-                                                         0 // No wrap
-                                                     } else {
-                                                         i - 1
-
-                                                     }
-                                                 }
-                                                 None => 0,
-                                             };
-                                             if !app_guard.search_results.is_empty() {
-                                                 app_guard.table_state.select(Some(prev));
-                                                 app_guard.detail_scroll = 0;
-                                                 app_guard.update_detail_view();
-                                             }
-                                         }
-                                         ViewFocus::ContentDetail => {
-                                             app_guard.detail_scroll = app_guard.detail_scroll.saturating_sub(1);
-                                         }
-                                         _ => {}
-                                     }
-                                 }
-                             }
-                        }
-
-                        KeyCode::Char('x') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                            if let ViewFocus::Search = app_guard.view_focus {
-                                app_guard.open_query_in_editor();
-                            } else {
+                            KeyCode::Char('t')
+                                if key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                            {
+                                app_guard.toggle_theme_selector();
+                            }
+                            // Help
+                            KeyCode::Char('/')
+                                if key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                            {
+                                app_guard.input_mode = InputMode::Help;
+                            }
+                            KeyCode::Char('t') => {
+                                app_guard.toggle_theme_selector();
+                            }
+                            KeyCode::Char('q') => {
+                                return Ok(());
+                            }
+                            KeyCode::Char('k')
+                                if key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                            {
+                                app_guard.scroll_up_fast();
+                            }
+                            KeyCode::Char('x')
+                                if key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                            {
                                 app_guard.open_in_editor();
                             }
-                        }
-                        // 'x' mapping removed as requested
-                        KeyCode::Enter => {
-                            drop(app_guard);
-                            let mut app_guard_search = app.lock().await;
-                            app_guard_search.perform_search().await;
-                            app_guard_search.input_mode = InputMode::Normal;
-                        }
-                        _ => {}
-                    },
-                    InputMode::Editing => {
-                        // Toggle Vim Mode
-                        if key.code == KeyCode::Char('v') && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
-                            app_guard.toggle_vim_mode();
-                            let mode_msg = match app_guard.editor_mode {
-                                EditorMode::Standard => "Standard Mode",
-                                EditorMode::Vim(_) => "Vim Mode",
-                            };
-                            app_guard.status_message = format!("Switched to {}.", mode_msg);
-                            continue; // Skip other handlers
-                        }
+                            // Rebind Clear to ^R (Reset) to free ^L for Fast Scroll
+                            KeyCode::Char('r')
+                                if key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                            {
+                                app_guard.clear_results();
+                            }
+                            // Fast Scroll
+                            KeyCode::Char('j')
+                                if key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                            {
+                                app_guard.scroll_down_fast();
+                            }
+                            KeyCode::Char('l')
+                                if key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                            {
+                                app_guard.initiate_load_search();
+                            }
+                            // Open URL
+                            KeyCode::Char('E')
+                                if key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::SHIFT) =>
+                            {
+                                app_guard.open_job_url();
+                            }
+                            // Saved Searches
+                            KeyCode::Char('s')
+                                if key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                            {
+                                app_guard.initiate_save_search();
+                            }
 
-                        match app_guard.editor_mode {
-                            EditorMode::Standard => {
-                                match key.code {
-                                    KeyCode::Enter if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) => {
+                            // Toggle View Mode (Ctrl+v OR Ctrl+m)
+                            KeyCode::Char('v') | KeyCode::Char('m')
+                                if key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                            {
+                                match app_guard.view_mode {
+                                    ViewMode::RawEvents => {
+                                        app_guard.view_mode = ViewMode::Table;
+                                        // Sync selection from scroll_offset
+                                        let idx = app_guard.scroll_offset as usize;
+                                        if idx < app_guard.search_results.len() {
+                                            app_guard.table_state.select(Some(idx));
+                                            app_guard.update_detail_view();
+                                        } else if !app_guard.search_results.is_empty() {
+                                            app_guard.table_state.select(Some(0));
+                                            app_guard.update_detail_view();
+                                        }
+                                    }
+                                    ViewMode::Table => {
+                                        app_guard.view_mode = ViewMode::RawEvents;
+                                        // Sync scroll_offset from table selection
+                                        if let Some(idx) = app_guard.table_state.selected() {
+                                            app_guard.scroll_offset = idx as u16;
+                                            // Warning: truncation if > u16
+                                        }
+                                    }
+                                }
+                                app_guard.status_message =
+                                    format!("Switched to {:?} mode.", app_guard.view_mode);
+                            }
+
+                            // Local Search Trigger
+                            KeyCode::Char('/') => {
+                                app_guard.input_mode = InputMode::LocalSearch;
+                                app_guard.local_search_query.clear();
+                                app_guard.status_message =
+                                    String::from("Enter regex search query...");
+                            }
+
+                            // Local Search Navigation
+                            KeyCode::Char('n') => {
+                                app_guard.next_match();
+                            }
+                            KeyCode::Char('N') => {
+                                app_guard.prev_match();
+                            }
+
+                            KeyCode::Tab => {
+                                app_guard.view_focus = match app_guard.view_focus {
+                                    ViewFocus::Search => ViewFocus::ContentList,
+                                    ViewFocus::ContentList => {
+                                        if app_guard.view_mode == ViewMode::Table {
+                                            ViewFocus::ContentDetail
+                                        } else {
+                                            ViewFocus::Search
+                                        }
+                                    }
+                                    ViewFocus::ContentDetail => ViewFocus::Search,
+                                };
+                            }
+
+                            KeyCode::Left | KeyCode::Char('h') => {
+                                app_guard.view_focus = ViewFocus::ContentList;
+                            }
+
+                            KeyCode::Right | KeyCode::Char('l')
+                                if !key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                            {
+                                if app_guard.view_mode == ViewMode::Table {
+                                    app_guard.view_focus = ViewFocus::ContentDetail;
+                                }
+                            }
+
+                            KeyCode::Down | KeyCode::Char('j')
+                                if !key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                            {
+                                if let ViewFocus::Search = app_guard.view_focus {
+                                    // Optional: Down from Search goes to Content
+                                    app_guard.view_focus = ViewFocus::ContentList;
+                                } else {
+                                    match app_guard.view_mode {
+                                        ViewMode::RawEvents => app_guard.scroll_down(),
+                                        ViewMode::Table => {
+                                            match app_guard.view_focus {
+                                                ViewFocus::ContentList => {
+                                                    let next =
+                                                        match app_guard.table_state.selected() {
+                                                            Some(i) => {
+                                                                if i >= app_guard
+                                                                    .search_results
+                                                                    .len()
+                                                                    .saturating_sub(1)
+                                                                {
+                                                                    i // No wrap
+                                                                } else {
+                                                                    i + 1
+                                                                }
+                                                            }
+                                                            None => 0,
+                                                        };
+                                                    if !app_guard.search_results.is_empty() {
+                                                        app_guard.table_state.select(Some(next));
+                                                        app_guard.detail_scroll = 0; // Reset detail scroll on row change
+                                                        app_guard.update_detail_view();
+                                                    }
+                                                }
+                                                ViewFocus::ContentDetail => {
+                                                    app_guard.detail_scroll =
+                                                        app_guard.detail_scroll.saturating_add(1);
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            KeyCode::Up | KeyCode::Char('k')
+                                if !key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                            {
+                                match app_guard.view_mode {
+                                    ViewMode::RawEvents => app_guard.scroll_up(),
+                                    ViewMode::Table => {
+                                        match app_guard.view_focus {
+                                            ViewFocus::ContentList => {
+                                                let prev = match app_guard.table_state.selected() {
+                                                    Some(i) => {
+                                                        if i == 0 {
+                                                            0 // No wrap
+                                                        } else {
+                                                            i - 1
+                                                        }
+                                                    }
+                                                    None => 0,
+                                                };
+                                                if !app_guard.search_results.is_empty() {
+                                                    app_guard.table_state.select(Some(prev));
+                                                    app_guard.detail_scroll = 0;
+                                                    app_guard.update_detail_view();
+                                                }
+                                            }
+                                            ViewFocus::ContentDetail => {
+                                                app_guard.detail_scroll =
+                                                    app_guard.detail_scroll.saturating_sub(1);
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+
+                            KeyCode::Char('x')
+                                if key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                            {
+                                if let ViewFocus::Search = app_guard.view_focus {
+                                    app_guard.open_query_in_editor();
+                                } else {
+                                    app_guard.open_in_editor();
+                                }
+                            }
+                            // 'x' mapping removed as requested
+                            KeyCode::Enter => {
+                                drop(app_guard);
+                                let mut app_guard_search = app.lock().await;
+                                app_guard_search.perform_search().await;
+                                app_guard_search.input_mode = InputMode::Normal;
+                            }
+                            _ => {}
+                        },
+                        InputMode::Editing => {
+                            // Toggle Vim Mode
+                            if key.code == KeyCode::Char('v')
+                                && key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::CONTROL)
+                            {
+                                app_guard.toggle_vim_mode();
+                                let mode_msg = match app_guard.editor_mode {
+                                    EditorMode::Standard => "Standard Mode",
+                                    EditorMode::Vim(_) => "Vim Mode",
+                                };
+                                app_guard.status_message = format!("Switched to {}.", mode_msg);
+                                continue; // Skip other handlers
+                            }
+
+                            match app_guard.editor_mode {
+                                EditorMode::Standard => match key.code {
+                                    KeyCode::Enter
+                                        if key
+                                            .modifiers
+                                            .contains(crossterm::event::KeyModifiers::SHIFT) =>
+                                    {
                                         app_guard.insert_char('\n');
                                     }
                                     KeyCode::Enter => {
@@ -1267,10 +1396,18 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                                         app_guard_search.perform_search().await;
                                         app_guard_search.input_mode = InputMode::Normal;
                                     }
-                                    KeyCode::Char('j') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                                    KeyCode::Char('j')
+                                        if key
+                                            .modifiers
+                                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                                    {
                                         app_guard.insert_char('\n');
                                     }
-                                    KeyCode::Char('x') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                                    KeyCode::Char('x')
+                                        if key
+                                            .modifiers
+                                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                                    {
                                         app_guard.open_query_in_editor();
                                     }
                                     KeyCode::Char(c) => {
@@ -1287,175 +1424,204 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                                     KeyCode::Down => app_guard.move_cursor_down(),
                                     KeyCode::Esc => {
                                         app_guard.input_mode = InputMode::Normal;
-                                        app_guard.status_message = String::from("Search cancelled.");
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            EditorMode::Vim(state) => match state {
-                                VimState::Normal => match key.code {
-                                    KeyCode::Char('i') => {
-                                        app_guard.editor_mode = EditorMode::Vim(VimState::Insert);
-                                        app_guard.status_message = String::from("-- INSERT --");
-                                    }
-                                    KeyCode::Char('h') | KeyCode::Left => app_guard.move_cursor_left(),
-                                    KeyCode::Char('l') | KeyCode::Right => app_guard.move_cursor_right(),
-                                    KeyCode::Char('k') | KeyCode::Up => app_guard.move_cursor_up(),
-                                    KeyCode::Char('j') | KeyCode::Down => app_guard.move_cursor_down(),
-                                    KeyCode::Char('x') => { // Delete char in normal mode
-                                        // vim 'x' deletes char under cursor.
-                                        // Current delete_char deletes BEFORE cursor (backspace style).
-                                        // We need delete_curr_char.
-                                        // For now, let's just ignore or implement later.
-                                        // Let's implement basics.
-                                    }
-                                    KeyCode::Enter => {
-                                        // Allow search submission from Normal mode?
-                                        // Usually 'Enter' in Normal mode goes down.
-                                        // But this is a search editor.
-                                        // Let's keep Enter to submit.
-                                        drop(app_guard);
-                                        let mut app_guard_search = app.lock().await;
-                                        app_guard_search.perform_search().await;
-                                        app_guard_search.input_mode = InputMode::Normal;
-                                    }
-                                    KeyCode::Esc => {
-                                        // Exit editing entirely?
-                                        app_guard.input_mode = InputMode::Normal;
-                                        app_guard.status_message = String::from("Search cancelled.");
+                                        app_guard.status_message =
+                                            String::from("Search cancelled.");
                                     }
                                     _ => {}
                                 },
-                                VimState::Insert => match key.code {
-                                    KeyCode::Esc => {
-                                        app_guard.editor_mode = EditorMode::Vim(VimState::Normal);
-                                        app_guard.status_message = String::from("-- NORMAL --");
-                                        app_guard.move_cursor_left(); // Vim usually moves cursor left on Esc
-                                    }
-                                    KeyCode::Enter if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) => {
-                                        app_guard.insert_char('\n');
-                                    }
-                                    KeyCode::Enter => {
-                                        drop(app_guard);
-                                        let mut app_guard_search = app.lock().await;
-                                        app_guard_search.perform_search().await;
-                                        app_guard_search.input_mode = InputMode::Normal;
-                                    }
-                                    KeyCode::Char(c) => {
-                                        if !c.is_control() {
-                                            app_guard.insert_char(c);
+                                EditorMode::Vim(state) => match state {
+                                    VimState::Normal => match key.code {
+                                        KeyCode::Char('i') => {
+                                            app_guard.editor_mode =
+                                                EditorMode::Vim(VimState::Insert);
+                                            app_guard.status_message = String::from("-- INSERT --");
+                                        }
+                                        KeyCode::Char('h') | KeyCode::Left => {
+                                            app_guard.move_cursor_left()
+                                        }
+                                        KeyCode::Char('l') | KeyCode::Right => {
+                                            app_guard.move_cursor_right()
+                                        }
+                                        KeyCode::Char('k') | KeyCode::Up => {
+                                            app_guard.move_cursor_up()
+                                        }
+                                        KeyCode::Char('j') | KeyCode::Down => {
+                                            app_guard.move_cursor_down()
+                                        }
+                                        KeyCode::Char('x') => { // Delete char in normal mode
+                                             // vim 'x' deletes char under cursor.
+                                             // Current delete_char deletes BEFORE cursor (backspace style).
+                                             // We need delete_curr_char.
+                                             // For now, let's just ignore or implement later.
+                                             // Let's implement basics.
+                                        }
+                                        KeyCode::Enter => {
+                                            // Allow search submission from Normal mode?
+                                            // Usually 'Enter' in Normal mode goes down.
+                                            // But this is a search editor.
+                                            // Let's keep Enter to submit.
+                                            drop(app_guard);
+                                            let mut app_guard_search = app.lock().await;
+                                            app_guard_search.perform_search().await;
+                                            app_guard_search.input_mode = InputMode::Normal;
+                                        }
+                                        KeyCode::Esc => {
+                                            // Exit editing entirely?
+                                            app_guard.input_mode = InputMode::Normal;
+                                            app_guard.status_message =
+                                                String::from("Search cancelled.");
+                                        }
+                                        _ => {}
+                                    },
+                                    VimState::Insert => match key.code {
+                                        KeyCode::Esc => {
+                                            app_guard.editor_mode =
+                                                EditorMode::Vim(VimState::Normal);
+                                            app_guard.status_message = String::from("-- NORMAL --");
+                                            app_guard.move_cursor_left(); // Vim usually moves cursor left on Esc
+                                        }
+                                        KeyCode::Enter
+                                            if key.modifiers.contains(
+                                                crossterm::event::KeyModifiers::SHIFT,
+                                            ) =>
+                                        {
+                                            app_guard.insert_char('\n');
+                                        }
+                                        KeyCode::Enter => {
+                                            drop(app_guard);
+                                            let mut app_guard_search = app.lock().await;
+                                            app_guard_search.perform_search().await;
+                                            app_guard_search.input_mode = InputMode::Normal;
+                                        }
+                                        KeyCode::Char(c) => {
+                                            if !c.is_control() {
+                                                app_guard.insert_char(c);
+                                            }
+                                        }
+                                        KeyCode::Backspace => app_guard.delete_char(),
+                                        _ => {}
+                                    },
+                                },
+                            }
+                        }
+                        InputMode::SaveSearch => match key.code {
+                            KeyCode::Enter => {
+                                app_guard.save_current_search();
+                            }
+                            KeyCode::Char(c) => {
+                                app_guard.save_search_name.push(c);
+                            }
+                            KeyCode::Backspace => {
+                                app_guard.save_search_name.pop();
+                            }
+                            KeyCode::Esc => {
+                                app_guard.input_mode = InputMode::Normal;
+                                app_guard.status_message = String::from("Save cancelled.");
+                            }
+                            _ => {}
+                        },
+                        InputMode::ConfirmOverwrite => match key.code {
+                            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                app_guard.overwrite_current_search();
+                            }
+                            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                app_guard.input_mode = InputMode::Normal;
+                                app_guard.status_message = String::from("Save cancelled.");
+                            }
+                            KeyCode::Char('r') | KeyCode::Char('R') => {
+                                app_guard.input_mode = InputMode::SaveSearch;
+                                app_guard.save_search_name = app_guard
+                                    .current_saved_search_name
+                                    .clone()
+                                    .unwrap_or_default();
+                                app_guard.status_message =
+                                    String::from("Enter name for saved search:");
+                            }
+                            _ => {}
+                        },
+                        InputMode::LoadSearch => match key.code {
+                            KeyCode::Enter => {
+                                app_guard.load_selected_search();
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                app_guard.list_next();
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                app_guard.list_previous();
+                            }
+                            KeyCode::Esc => {
+                                app_guard.input_mode = InputMode::Normal;
+                                app_guard.status_message = String::from("Load cancelled.");
+                            }
+                            _ => {}
+                        },
+                        InputMode::LocalSearch => match key.code {
+                            KeyCode::Enter => {
+                                app_guard.perform_local_search();
+                                app_guard.input_mode = InputMode::Normal;
+                            }
+                            KeyCode::Char(c) => {
+                                app_guard.local_search_query.push(c);
+                            }
+                            KeyCode::Backspace => {
+                                app_guard.local_search_query.pop();
+                            }
+                            KeyCode::Esc => {
+                                app_guard.input_mode = InputMode::Normal;
+                                app_guard.status_message = String::from("Local search cancelled.");
+                            }
+                            _ => {}
+                        },
+                        InputMode::ThemeSelect => match key.code {
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                let i = match app_guard.theme_list_state.selected() {
+                                    Some(i) => {
+                                        if i >= app_guard.theme_options.len() - 1 {
+                                            0
+                                        } else {
+                                            i + 1
                                         }
                                     }
-                                    KeyCode::Backspace => app_guard.delete_char(),
-                                    _ => {}
-                                }
+                                    None => 0,
+                                };
+                                app_guard.theme_list_state.select(Some(i));
                             }
-                        }
-                    },
-                    InputMode::SaveSearch => match key.code {
-                        KeyCode::Enter => {
-                            app_guard.save_current_search();
-                        }
-                        KeyCode::Char(c) => {
-                            app_guard.save_search_name.push(c);
-                        }
-                        KeyCode::Backspace => {
-                            app_guard.save_search_name.pop();
-                        }
-                        KeyCode::Esc => {
-                            app_guard.input_mode = InputMode::Normal;
-                            app_guard.status_message = String::from("Save cancelled.");
-                        }
-                        _ => {}
-                    },
-                    InputMode::ConfirmOverwrite => match key.code {
-                        KeyCode::Char('y') | KeyCode::Char('Y') => {
-                            app_guard.overwrite_current_search();
-                        }
-                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                            app_guard.input_mode = InputMode::Normal;
-                            app_guard.status_message = String::from("Save cancelled.");
-                        }
-                        KeyCode::Char('r') | KeyCode::Char('R') => {
-                            app_guard.input_mode = InputMode::SaveSearch;
-                            app_guard.save_search_name = app_guard.current_saved_search_name.clone().unwrap_or_default();
-                            app_guard.status_message = String::from("Enter name for saved search:");
-                        }
-                        _ => {}
-                    },
-                    InputMode::LoadSearch => match key.code {
-                        KeyCode::Enter => {
-                            app_guard.load_selected_search();
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            app_guard.list_next();
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            app_guard.list_previous();
-                        }
-                        KeyCode::Esc => {
-                            app_guard.input_mode = InputMode::Normal;
-                            app_guard.status_message = String::from("Load cancelled.");
-                        }
-                        _ => {}
-                    },
-                    InputMode::LocalSearch => match key.code {
-                        KeyCode::Enter => {
-                            app_guard.perform_local_search();
-                            app_guard.input_mode = InputMode::Normal;
-                        }
-                        KeyCode::Char(c) => {
-                            app_guard.local_search_query.push(c);
-                        }
-                        KeyCode::Backspace => {
-                            app_guard.local_search_query.pop();
-                        }
-                        KeyCode::Esc => {
-                            app_guard.input_mode = InputMode::Normal;
-                            app_guard.status_message = String::from("Local search cancelled.");
-                        }
-                        _ => {}
-                    },
-                    InputMode::ThemeSelect => match key.code {
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            let i = match app_guard.theme_list_state.selected() {
-                                Some(i) => {
-                                    if i >= app_guard.theme_options.len() - 1 { 0 } else { i + 1 }
-                                }
-                                None => 0,
-                            };
-                            app_guard.theme_list_state.select(Some(i));
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            let i = match app_guard.theme_list_state.selected() {
-                                Some(i) => {
-                                    if i == 0 { app_guard.theme_options.len() - 1 } else { i - 1 }
-                                }
-                                None => 0,
-                            };
-                            app_guard.theme_list_state.select(Some(i));
-                        }
-                        KeyCode::Enter => {
-                            if let Some(idx) = app_guard.theme_list_state.selected() {
-                                let theme_name = app_guard.theme_options[idx];
-                                app_guard.apply_theme(theme_name, true);
-                                app_guard.status_message = format!("Theme '{}' applied.", theme_name);
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                let i = match app_guard.theme_list_state.selected() {
+                                    Some(i) => {
+                                        if i == 0 {
+                                            app_guard.theme_options.len() - 1
+                                        } else {
+                                            i - 1
+                                        }
+                                    }
+                                    None => 0,
+                                };
+                                app_guard.theme_list_state.select(Some(i));
                             }
-                            app_guard.input_mode = InputMode::Normal;
-                        }
-                        KeyCode::Esc => {
-                            app_guard.input_mode = InputMode::Normal;
-                            app_guard.status_message = String::from("Theme selection cancelled.");
-                        }
-                        _ => {}
-                    },
-                    InputMode::Help => match key.code {
-                        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
-                            app_guard.input_mode = InputMode::Normal;
-                        }
-                        _ => {}
-                    }
-                } // End InputMode match
+                            KeyCode::Enter => {
+                                if let Some(idx) = app_guard.theme_list_state.selected() {
+                                    let theme_name = app_guard.theme_options[idx];
+                                    app_guard.apply_theme(theme_name, true);
+                                    app_guard.status_message =
+                                        format!("Theme '{}' applied.", theme_name);
+                                }
+                                app_guard.input_mode = InputMode::Normal;
+                            }
+                            KeyCode::Esc => {
+                                app_guard.input_mode = InputMode::Normal;
+                                app_guard.status_message =
+                                    String::from("Theme selection cancelled.");
+                            }
+                            _ => {}
+                        },
+                        InputMode::Help => match key.code {
+                            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                                app_guard.input_mode = InputMode::Normal;
+                            }
+                            _ => {}
+                        },
+                    } // End InputMode match
                 } // End Key match
                 _ => {}
             } // End Event match
@@ -1472,9 +1638,7 @@ fn recursive_json_parse(v: Value) -> Value {
             }
             Value::Object(new_map)
         }
-        Value::Array(arr) => {
-            Value::Array(arr.into_iter().map(recursive_json_parse).collect())
-        }
+        Value::Array(arr) => Value::Array(arr.into_iter().map(recursive_json_parse).collect()),
         Value::String(s) => {
             // Attempt to parse string as JSON
             if let Ok(parsed) = serde_json::from_str::<Value>(&s) {
@@ -1493,7 +1657,11 @@ fn syntect_style_to_ratatui(style: syntect::highlighting::Style) -> Style {
 
     // Foreground
     if style.foreground.a > 0 {
-        s = s.fg(Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b));
+        s = s.fg(Color::Rgb(
+            style.foreground.r,
+            style.foreground.g,
+            style.foreground.b,
+        ));
     }
 
     // Background - Ignored as requested ("Nothing should have background color")
@@ -1515,23 +1683,32 @@ fn syntect_style_to_ratatui(style: syntect::highlighting::Style) -> Style {
     s
 }
 
-fn render_yaml_detail(syntax_set: &SyntaxSet, theme: &Theme, value: &Value) -> ratatui::text::Text<'static> {
+fn render_yaml_detail(
+    syntax_set: &SyntaxSet,
+    theme: &Theme,
+    value: &Value,
+) -> ratatui::text::Text<'static> {
     // 1. Recursive Parse
     let parsed_value = recursive_json_parse(value.clone());
 
     // 2. Convert to YAML
-    let yaml_str = serde_yaml::to_string(&parsed_value).unwrap_or_else(|e| format!("Error converting to YAML: {}", e));
+    let yaml_str = serde_yaml::to_string(&parsed_value)
+        .unwrap_or_else(|e| format!("Error converting to YAML: {}", e));
 
     // 3. Highlight
-    let syntax = syntax_set.find_syntax_by_extension("yaml").unwrap_or_else(|| syntax_set.find_syntax_plain_text());
+    let syntax = syntax_set
+        .find_syntax_by_extension("yaml")
+        .unwrap_or_else(|| syntax_set.find_syntax_plain_text());
     let mut h = HighlightLines::new(syntax, theme);
 
     let mut lines = Vec::new();
     for line in yaml_str.lines() {
-        let ranges: Vec<(syntect::highlighting::Style, &str)> = h.highlight_line(line, syntax_set).unwrap_or_default();
-        let spans: Vec<Span> = ranges.into_iter().map(|(style, text)| {
-             Span::styled(text.to_string(), syntect_style_to_ratatui(style))
-        }).collect();
+        let ranges: Vec<(syntect::highlighting::Style, &str)> =
+            h.highlight_line(line, syntax_set).unwrap_or_default();
+        let spans: Vec<Span> = ranges
+            .into_iter()
+            .map(|(style, text)| Span::styled(text.to_string(), syntect_style_to_ratatui(style)))
+            .collect();
         lines.push(Line::from(spans));
     }
 
@@ -1628,11 +1805,17 @@ fn ui(f: &mut Frame, app: &mut App) {
         // Simple bucketing of time
         // Note: parsing _time string requires chrono
         // format: 2023-10-27T10:00:00.000+00:00
-        let timestamps: Vec<i64> = app.search_results.iter().filter_map(|v| {
-            v.get("_time").and_then(|t| t.as_str()).and_then(|s| {
-                chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.timestamp())
+        let timestamps: Vec<i64> = app
+            .search_results
+            .iter()
+            .filter_map(|v| {
+                v.get("_time").and_then(|t| t.as_str()).and_then(|s| {
+                    chrono::DateTime::parse_from_rfc3339(s)
+                        .ok()
+                        .map(|dt| dt.timestamp())
+                })
             })
-        }).collect();
+            .collect();
 
         if !timestamps.is_empty() {
             let min = *timestamps.iter().min().unwrap_or(&0);
@@ -1653,15 +1836,16 @@ fn ui(f: &mut Frame, app: &mut App) {
     }
 
     let sparkline = Sparkline::default()
-        .block(Block::default()
-            .title("Activity")
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(app.theme.border)))
+        .block(
+            Block::default()
+                .title("Activity")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(app.theme.border)),
+        )
         .data(&spark_data)
         .style(Style::default().fg(app.theme.summary_highlight));
     f.render_widget(sparkline, header_chunks[1]);
-
 
     // --- Job Status (Middle 1) ---
     let mut stats_text = vec![];
@@ -1671,14 +1855,14 @@ fn ui(f: &mut Frame, app: &mut App) {
         if status.is_done {
             String::new() // Don't show elapsed if done, rely on "Time" field
         } else if let Some(start_time) = app.job_created_at {
-             let elapsed = start_time.elapsed().as_secs();
-             format!("(Elapsed: {}s) ", elapsed)
+            let elapsed = start_time.elapsed().as_secs();
+            format!("(Elapsed: {}s) ", elapsed)
         } else {
             String::new()
         }
     } else if let Some(start_time) = app.job_created_at {
-         let elapsed = start_time.elapsed().as_secs();
-         format!("(Elapsed: {}s) ", elapsed)
+        let elapsed = start_time.elapsed().as_secs();
+        format!("(Elapsed: {}s) ", elapsed)
     } else {
         String::new()
     };
@@ -1686,27 +1870,51 @@ fn ui(f: &mut Frame, app: &mut App) {
     if let Some(status) = &app.current_job_status {
         let mut line_vec = vec![
             Span::styled("Status: ", Style::default().fg(app.theme.title_secondary)),
-            Span::styled(format!("{} {} ", if status.is_done { "Done" } else { "Running" }, elapsed_text), Style::default().fg(app.theme.text)),
+            Span::styled(
+                format!(
+                    "{} {} ",
+                    if status.is_done { "Done" } else { "Running" },
+                    elapsed_text
+                ),
+                Style::default().fg(app.theme.text),
+            ),
             Span::styled(" | Count: ", Style::default().fg(app.theme.title_secondary)),
-            Span::styled(format!("{} ", status.result_count), Style::default().fg(app.theme.text)),
+            Span::styled(
+                format!("{} ", status.result_count),
+                Style::default().fg(app.theme.text),
+            ),
             Span::styled(" | Time: ", Style::default().fg(app.theme.title_secondary)),
-            Span::styled(format!("{:.2}s ", status.run_duration), Style::default().fg(app.theme.text)),
+            Span::styled(
+                format!("{:.2}s ", status.run_duration),
+                Style::default().fg(app.theme.text),
+            ),
         ];
 
         if let Some(sid) = &app.current_job_sid {
             let url = app.client.get_shareable_url(sid);
-            line_vec.push(Span::styled(" | URL: ", Style::default().fg(app.theme.title_secondary)));
-            line_vec.push(Span::styled(url, Style::default().fg(app.theme.summary_highlight)));
+            line_vec.push(Span::styled(
+                " | URL: ",
+                Style::default().fg(app.theme.title_secondary),
+            ));
+            line_vec.push(Span::styled(
+                url,
+                Style::default().fg(app.theme.summary_highlight),
+            ));
         }
 
         stats_text.push(Line::from(line_vec));
-
     } else if let Some(sid) = &app.current_job_sid {
         // Job created but status not yet fetched
         stats_text.push(Line::from(vec![
             Span::styled("Status: ", Style::default().fg(app.theme.title_secondary)),
-            Span::styled(format!("Running {} ", elapsed_text), Style::default().fg(app.theme.text)),
-            Span::styled(format!("(SID: {})", sid), Style::default().fg(app.theme.title_secondary)),
+            Span::styled(
+                format!("Running {} ", elapsed_text),
+                Style::default().fg(app.theme.text),
+            ),
+            Span::styled(
+                format!("(SID: {})", sid),
+                Style::default().fg(app.theme.title_secondary),
+            ),
         ]));
     } else {
         stats_text.push(Line::from("No active job."));
@@ -1716,7 +1924,6 @@ fn ui(f: &mut Frame, app: &mut App) {
         .alignment(Alignment::Center)
         .style(Style::default().fg(app.theme.text));
     f.render_widget(stats_paragraph, chunks[1]);
-
 
     // --- Results (Middle 2) ---
     let results_area = chunks[2];
@@ -1746,19 +1953,31 @@ fn ui(f: &mut Frame, app: &mut App) {
                 let mut content = vec![];
                 for (i, result) in app.search_results.iter().enumerate() {
                     if i > 0 {
-                        content.push(Line::from(Span::styled("-".repeat(results_area.width as usize - 6), Style::default().fg(app.theme.border))));
+                        content.push(Line::from(Span::styled(
+                            "-".repeat(results_area.width as usize - 6),
+                            Style::default().fg(app.theme.border),
+                        )));
                     }
                     if let Some(obj) = result.as_object() {
-                         for (k, v) in obj {
-                             if k.starts_with("_") && k != "_time" && k != "_raw" { continue; }
-                             let val_str = if let Some(s) = v.as_str() { s.to_string() } else { v.to_string() };
-                             content.push(Line::from(vec![
-                                 Span::styled(format!("{}: ", k), Style::default().fg(app.theme.summary_highlight)),
-                                 Span::styled(val_str, Style::default().fg(app.theme.text)),
-                             ]));
-                         }
+                        for (k, v) in obj {
+                            if k.starts_with("_") && k != "_time" && k != "_raw" {
+                                continue;
+                            }
+                            let val_str = if let Some(s) = v.as_str() {
+                                s.to_string()
+                            } else {
+                                v.to_string()
+                            };
+                            content.push(Line::from(vec![
+                                Span::styled(
+                                    format!("{}: ", k),
+                                    Style::default().fg(app.theme.summary_highlight),
+                                ),
+                                Span::styled(val_str, Style::default().fg(app.theme.text)),
+                            ]));
+                        }
                     } else {
-                         content.push(Line::from(format!("{:?}", result)));
+                        content.push(Line::from(format!("{:?}", result)));
                     }
                 }
                 let paragraph = Paragraph::new(content)
@@ -1784,18 +2003,41 @@ fn ui(f: &mut Frame, app: &mut App) {
                 // "Time Sourcetype Host Message should not have a highlighted background. Instead, underline the table headers."
                 // "In the Table View: Don't show Hosts."
                 let header = Row::new(vec!["Time", "Sourcetype", "Message"])
-                    .style(Style::default().fg(app.theme.title_secondary).add_modifier(Modifier::UNDERLINED))
+                    .style(
+                        Style::default()
+                            .fg(app.theme.title_secondary)
+                            .add_modifier(Modifier::UNDERLINED),
+                    )
                     .bottom_margin(1);
 
-                let rows: Vec<Row> = app.search_results.iter().map(|item| {
-                    let time = item.get("_time").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let sourcetype = item.get("sourcetype").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    // Host removed
-                    let msg = item.get("_raw").and_then(|v| v.as_str()).unwrap_or("").lines().next().unwrap_or("").to_string();
+                let rows: Vec<Row> = app
+                    .search_results
+                    .iter()
+                    .map(|item| {
+                        let time = item
+                            .get("_time")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let sourcetype = item
+                            .get("sourcetype")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        // Host removed
+                        let msg = item
+                            .get("_raw")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .to_string();
 
-                    Row::new(vec![time, sourcetype, msg])
-                        .style(Style::default().fg(app.theme.text))
-                }).collect();
+                        Row::new(vec![time, sourcetype, msg])
+                            .style(Style::default().fg(app.theme.text))
+                    })
+                    .collect();
 
                 // NOTE: The `block` variable defined outside is used for the container border.
                 // We render it first to set the boundary.
@@ -1812,14 +2054,21 @@ fn ui(f: &mut Frame, app: &mut App) {
                 app.detail_area = inner_chunks[1];
 
                 // --- Left Pane: Table ---
-                let table = Table::new(rows, [
+                let table = Table::new(
+                    rows,
+                    [
                         Constraint::Length(24), // Time
                         Constraint::Length(20), // Sourcetype
                         Constraint::Min(20),    // Message (Host removed)
-                    ])
-                    .header(header)
-                    .row_highlight_style(Style::default().bg(app.theme.summary_highlight).fg(Color::White))
-                    .highlight_symbol(">> ");
+                    ],
+                )
+                .header(header)
+                .row_highlight_style(
+                    Style::default()
+                        .bg(app.theme.summary_highlight)
+                        .fg(Color::White),
+                )
+                .highlight_symbol(">> ");
 
                 // Render table directly into chunk, but we need to handle borders if we want distinct colors.
                 // Since we render the outer block, inner widgets shouldn't necessarily have borders unless we want to override the middle separator?
@@ -1833,15 +2082,21 @@ fn ui(f: &mut Frame, app: &mut App) {
                     .borders(Borders::RIGHT)
                     .border_style(table_border_style);
 
-                f.render_stateful_widget(table.block(table_block), inner_chunks[0], &mut app.table_state);
+                f.render_stateful_widget(
+                    table.block(table_block),
+                    inner_chunks[0],
+                    &mut app.table_state,
+                );
 
                 // --- Right Pane: Detail ---
                 // Use cached detail text
                 let detail_paragraph = Paragraph::new(app.cached_detail.clone())
-                    .block(Block::default()
-                        .borders(Borders::NONE) // Remove left border to avoid double
-                        .border_style(detail_border_style)
-                        .padding(Padding::new(1, 0, 0, 0)))
+                    .block(
+                        Block::default()
+                            .borders(Borders::NONE) // Remove left border to avoid double
+                            .border_style(detail_border_style)
+                            .padding(Padding::new(1, 0, 0, 0)),
+                    )
                     .wrap(Wrap { trim: false })
                     .scroll((app.detail_scroll, 0))
                     .style(Style::default().fg(app.theme.text));
@@ -1863,8 +2118,14 @@ fn ui(f: &mut Frame, app: &mut App) {
     ];
     if let Some(status) = &app.current_job_status {
         if !status.is_done {
-            footer_spans.push(Span::styled(" x ", Style::default().fg(app.theme.title_main)));
-            footer_spans.push(Span::styled("Kill Job  |  ", Style::default().fg(app.theme.text)));
+            footer_spans.push(Span::styled(
+                " x ",
+                Style::default().fg(app.theme.title_main),
+            ));
+            footer_spans.push(Span::styled(
+                "Kill Job  |  ",
+                Style::default().fg(app.theme.text),
+            ));
         }
     }
     footer_spans.extend(vec![
@@ -1896,16 +2157,18 @@ fn ui(f: &mut Frame, app: &mut App) {
 
         let input_block = Paragraph::new(app.local_search_query.as_str())
             .style(Style::default().fg(app.theme.input_edit))
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title("Local Search (Regex)")
-                .border_style(Style::default().fg(app.theme.title_main)));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Local Search (Regex)")
+                    .border_style(Style::default().fg(app.theme.title_main)),
+            );
         f.render_widget(input_block, area);
 
         // Cursor for Local Search
         f.set_cursor_position(ratatui::layout::Position::new(
-             area.x + 1 + app.local_search_query.len() as u16,
-             area.y + 1
+            area.x + 1 + app.local_search_query.len() as u16,
+            area.y + 1,
         ));
     }
 
@@ -1913,17 +2176,24 @@ fn ui(f: &mut Frame, app: &mut App) {
         let area = centered_rect(40, 40, f.area());
         f.render_widget(ratatui::widgets::Clear, area);
 
-        let items: Vec<ListItem> = app.theme_options
+        let items: Vec<ListItem> = app
+            .theme_options
             .iter()
             .map(|i| ListItem::new(*i).style(Style::default().fg(app.theme.text)))
             .collect();
 
         let list = List::new(items)
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title("Select Theme")
-                .border_style(Style::default().fg(app.theme.title_main)))
-            .highlight_style(Style::default().bg(app.theme.summary_highlight).fg(Color::White))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Select Theme")
+                    .border_style(Style::default().fg(app.theme.title_main)),
+            )
+            .highlight_style(
+                Style::default()
+                    .bg(app.theme.summary_highlight)
+                    .fg(Color::White),
+            )
             .highlight_symbol(">> ");
 
         f.render_stateful_widget(list, area, &mut app.theme_list_state);
@@ -1962,23 +2232,26 @@ fn ui(f: &mut Frame, app: &mut App) {
             ("h / l / Left / Right", "Focus Panes"),
         ];
 
-        let rows: Vec<Row> = shortcuts.iter().map(|(k, d)| {
-             let style = if d.is_empty() {
-                 Style::default().fg(app.theme.title_secondary).add_modifier(Modifier::BOLD)
-             } else {
-                 Style::default().fg(app.theme.text)
-             };
-             Row::new(vec![k.to_string(), d.to_string()]).style(style)
-        }).collect();
+        let rows: Vec<Row> = shortcuts
+            .iter()
+            .map(|(k, d)| {
+                let style = if d.is_empty() {
+                    Style::default()
+                        .fg(app.theme.title_secondary)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(app.theme.text)
+                };
+                Row::new(vec![k.to_string(), d.to_string()]).style(style)
+            })
+            .collect();
 
-        let table = Table::new(rows, [
-                Constraint::Length(25),
-                Constraint::Min(30),
-            ])
-            .block(Block::default()
+        let table = Table::new(rows, [Constraint::Length(25), Constraint::Min(30)]).block(
+            Block::default()
                 .borders(Borders::ALL)
                 .title("Keyboard Shortcuts")
-                .border_style(Style::default().fg(app.theme.title_main)));
+                .border_style(Style::default().fg(app.theme.title_main)),
+        );
 
         f.render_widget(table, area);
     }
@@ -1989,10 +2262,12 @@ fn ui(f: &mut Frame, app: &mut App) {
 
         let input_block = Paragraph::new(app.save_search_name.as_str())
             .style(Style::default().fg(app.theme.input_edit))
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title("Save Search As")
-                .border_style(Style::default().fg(app.theme.title_main)));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Save Search As")
+                    .border_style(Style::default().fg(app.theme.title_main)),
+            );
         f.render_widget(input_block, area);
     }
 
@@ -2002,10 +2277,12 @@ fn ui(f: &mut Frame, app: &mut App) {
 
         let msg = Paragraph::new("Press 'y' to overwrite, 'n' to cancel, 'r' to rename.")
             .style(Style::default().fg(app.theme.text))
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title("Confirm Overwrite")
-                .border_style(Style::default().fg(app.theme.evilness_label))); // Use red for warning
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Confirm Overwrite")
+                    .border_style(Style::default().fg(app.theme.evilness_label)),
+            ); // Use red for warning
         f.render_widget(msg, area);
     }
 
@@ -2013,17 +2290,24 @@ fn ui(f: &mut Frame, app: &mut App) {
         let area = centered_rect(60, 40, f.area());
         f.render_widget(ratatui::widgets::Clear, area);
 
-        let items: Vec<ListItem> = app.saved_searches
+        let items: Vec<ListItem> = app
+            .saved_searches
             .iter()
             .map(|i| ListItem::new(i.as_str()).style(Style::default().fg(app.theme.text)))
             .collect();
 
         let list = List::new(items)
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title("Saved Searches")
-                .border_style(Style::default().fg(app.theme.title_main)))
-            .highlight_style(Style::default().bg(app.theme.summary_highlight).fg(Color::White))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Saved Searches")
+                    .border_style(Style::default().fg(app.theme.title_main)),
+            )
+            .highlight_style(
+                Style::default()
+                    .bg(app.theme.summary_highlight)
+                    .fg(Color::White),
+            )
             .highlight_symbol(">> ");
 
         f.render_stateful_widget(list, area, &mut app.saved_search_list_state);
@@ -2037,17 +2321,17 @@ fn ui(f: &mut Frame, app: &mut App) {
 
         // Ensure cursor is within displayed area
         if displayed_y < input_display_height && displayed_x < input_area_width {
-             f.set_cursor_position(ratatui::layout::Position::new(
+            f.set_cursor_position(ratatui::layout::Position::new(
                 header_chunks[0].x + 1 + displayed_x, // +1 for border
                 header_chunks[0].y + 1 + displayed_y, // +1 for border
             ));
         }
     } else if let InputMode::SaveSearch = app.input_mode {
-         let area = centered_rect(60, 20, f.area());
-         f.set_cursor_position(ratatui::layout::Position::new(
-             area.x + 1 + app.save_search_name.len() as u16,
-             area.y + 1
-         ));
+        let area = centered_rect(60, 20, f.area());
+        f.set_cursor_position(ratatui::layout::Position::new(
+            area.x + 1 + app.save_search_name.len() as u16,
+            area.y + 1,
+        ));
     }
 }
 

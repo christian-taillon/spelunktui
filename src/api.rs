@@ -161,6 +161,14 @@ impl SplunkClient {
         let web_url = self.base_url.replace(":8089", "");
         format!("{}/en-US/app/search/search?sid={}", web_url, sid)
     }
+
+    pub fn get_base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    pub fn get_token(&self) -> &str {
+        &self.token
+    }
 }
 
 fn format_query(query: &str) -> String {

@@ -150,6 +150,7 @@ enum InputMode {
     LocalSearch,
     ThemeSelect,
     Help,
+    SslConfirmation,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -391,8 +392,17 @@ impl App {
                 self.job_created_at = Some(std::time::Instant::now());
             }
             Err(e) => {
-                error!("Search creation failed: {}", e);
-                self.status_message = format!("Search failed: {}", e);
+                let err_msg = e.to_string();
+                error!("Search creation failed: {}", err_msg);
+
+                // Detect SSL Certificate Error
+                // reqwest/hyper usually return errors containing "certificate" or "invalid peer certificate"
+                if err_msg.to_lowercase().contains("certificate") {
+                     self.input_mode = InputMode::SslConfirmation;
+                     self.status_message = String::from("SSL Certificate verification failed.");
+                } else {
+                     self.status_message = format!("Search failed: {}", err_msg);
+                }
             }
         }
     }
@@ -1454,6 +1464,34 @@ async fn run_loop<B: Backend + std::io::Write>(terminal: &mut Terminal<B>, app: 
                             app_guard.input_mode = InputMode::Normal;
                         }
                         _ => {}
+                    },
+                    InputMode::SslConfirmation => match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                             // User Approved Insecure Connection
+                             app_guard.status_message = String::from("Disabling SSL verification and updating config...");
+
+                             // 1. Save Preference
+                             if let Err(e) = Config::save_ssl_preference(false) {
+                                 error!("Failed to save SSL preference: {}", e);
+                             }
+
+                             // 2. Recreate Client
+                             let base_url = app_guard.client.get_base_url().to_string();
+                             let token = app_guard.client.get_token().to_string();
+
+                             // We need to drop the guard to update the Arc<App> logic or just update the client in App?
+                             // App has `client: Arc<SplunkClient>`. We can replace it since we have mutable reference to App via `app_guard`.
+                             let new_client = Arc::new(SplunkClient::new(base_url, token, false)); // verify_ssl = false
+                             app_guard.client = new_client;
+
+                             app_guard.input_mode = InputMode::Normal;
+                             app_guard.status_message = String::from("SSL verification disabled. Please retry search.");
+                        }
+                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                            app_guard.input_mode = InputMode::Normal;
+                            app_guard.status_message = String::from("SSL connection cancelled.");
+                        }
+                        _ => {}
                     }
                 } // End InputMode match
                 } // End Key match
@@ -2006,6 +2044,31 @@ fn ui(f: &mut Frame, app: &mut App) {
                 .borders(Borders::ALL)
                 .title("Confirm Overwrite")
                 .border_style(Style::default().fg(app.theme.evilness_label))); // Use red for warning
+        f.render_widget(msg, area);
+    }
+
+    if let InputMode::SslConfirmation = app.input_mode {
+        let area = centered_rect(60, 20, f.area());
+        f.render_widget(ratatui::widgets::Clear, area);
+
+        let text = vec![
+            Line::from(Span::styled("WARNING: SSL Certificate Verification Failed", Style::default().fg(app.theme.evilness_label).add_modifier(Modifier::BOLD))),
+            Line::from(""),
+            Line::from("The server's certificate could not be verified."),
+            Line::from("This could mean someone is intercepting your connection."),
+            Line::from(""),
+            Line::from("Do you want to disable verification and connect anyway?"),
+            Line::from("This setting will be saved to your config."),
+            Line::from(""),
+            Line::from(Span::styled("Press 'y' to proceed (INSECURE), 'n' to cancel.", Style::default().fg(app.theme.text))),
+        ];
+
+        let msg = Paragraph::new(text)
+            .style(Style::default().fg(app.theme.text))
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .title("Security Warning")
+                .border_style(Style::default().fg(app.theme.evilness_label)));
         f.render_widget(msg, area);
     }
 

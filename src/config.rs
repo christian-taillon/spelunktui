@@ -96,6 +96,37 @@ impl Config {
         }
         Ok(())
     }
+
+    pub fn save_ssl_preference(verify: bool) -> Result<()> {
+        if let Some(proj_dirs) = ProjectDirs::from("", "", "splunk-tui") {
+            let config_dir = proj_dirs.config_dir();
+            std::fs::create_dir_all(config_dir)?;
+            let config_path = config_dir.join("config.toml");
+
+            // Read existing or create new
+            let mut file_config: FileConfig = if config_path.exists() {
+                let content = std::fs::read_to_string(&config_path)?;
+                toml::from_str(&content).unwrap_or(FileConfig {
+                    splunk_base_url: None,
+                    splunk_token: None,
+                    splunk_verify_ssl: None,
+                    theme: None
+                })
+            } else {
+                FileConfig {
+                    splunk_base_url: None,
+                    splunk_token: None,
+                    splunk_verify_ssl: None,
+                    theme: None
+                }
+            };
+
+            file_config.splunk_verify_ssl = Some(verify);
+            let toml_string = toml::to_string(&file_config)?;
+            std::fs::write(config_path, toml_string)?;
+        }
+        Ok(())
+    }
 }
 
 impl Default for Config {

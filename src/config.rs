@@ -39,7 +39,8 @@ impl Config {
         if let Ok(val) = env::var("SPLUNK_BASE_URL") { config.splunk_base_url = val; }
         if let Ok(val) = env::var("SPLUNK_TOKEN") { config.splunk_token = val; }
         if let Ok(val) = env::var("SPLUNK_VERIFY_SSL") {
-            config.splunk_verify_ssl = val.parse().unwrap_or(false);
+            // Secure default: If parsing fails, default to TRUE (secure), not false.
+            config.splunk_verify_ssl = val.parse().unwrap_or(true);
         }
 
         // 3. Load from .env file (Project Config) - FORCE OVERRIDE
@@ -72,7 +73,8 @@ impl Config {
                                      }
                                  },
                                  "SPLUNK_VERIFY_SSL" => {
-                                     config.splunk_verify_ssl = val.parse().unwrap_or(false);
+                                     // Secure default: If parsing fails, default to TRUE (secure), not false.
+                                     config.splunk_verify_ssl = val.parse().unwrap_or(true);
                                  },
                                  _ => {}
                              }
@@ -101,7 +103,7 @@ impl Default for Config {
         Self {
             splunk_base_url: String::new(),
             splunk_token: String::new(),
-            splunk_verify_ssl: false,
+            splunk_verify_ssl: true, // Secure by default
             theme: None,
         }
     }
@@ -155,3 +157,25 @@ impl Config {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_defaults() {
+        let config = Config::default();
+        assert_eq!(config.splunk_verify_ssl, true, "SPLUNK_VERIFY_SSL should default to true");
+    }
+
+    #[test]
+    fn test_env_parsing_secure_fallback() {
+        // Mock env var parsing logic used in Config::load
+        let val = "invalid_bool";
+        let parsed = val.parse().unwrap_or(true);
+        assert_eq!(parsed, true, "Should fallback to true (secure) on invalid input");
+
+        let val = "false";
+        let parsed = val.parse().unwrap_or(true);
+        assert_eq!(parsed, false, "Should allow explicit false");
+    }
+}

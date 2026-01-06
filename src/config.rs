@@ -39,13 +39,13 @@ impl Config {
 
         // 2. Load from Keyring (if token is missing)
         if config.splunk_token.is_empty() {
-             let service = "splunk-tui";
-             let user = "token";
-             if let Ok(entry) = Entry::new(service, user) {
-                 if let Ok(password) = entry.get_password() {
-                     config.splunk_token = password;
-                 }
-             }
+            let service = "splunk-tui";
+            let user = "token";
+            if let Ok(entry) = Entry::new(service, user) {
+                if let Ok(password) = entry.get_password() {
+                    config.splunk_token = password;
+                }
+            }
         }
 
         // 3. Load from Environment Variables (System/Shell Config)

@@ -1,8 +1,8 @@
-use anyhow::{Context, Result};
+use crate::config::FileConfig;
+use anyhow::Result;
 use directories::ProjectDirs;
 use keyring::Entry;
 use std::io::{self, Write};
-use crate::config::{Config, FileConfig};
 
 pub fn run() -> Result<()> {
     println!("Welcome to splunk-tui configuration wizard!");
@@ -44,16 +44,16 @@ pub fn run() -> Result<()> {
     match Entry::new(service, user) {
         Ok(entry) => {
             if let Err(e) = entry.set_password(&token) {
-                 eprintln!("Warning: Failed to save token to OS keyring: {}", e);
-                 eprintln!("Falling back to saving token in config file (plaintext).");
+                eprintln!("Warning: Failed to save token to OS keyring: {}", e);
+                eprintln!("Falling back to saving token in config file (plaintext).");
             } else {
                 token_saved_to_keyring = true;
                 println!("Token saved securely to OS keyring.");
             }
         }
         Err(e) => {
-             eprintln!("Warning: Failed to access OS keyring: {}", e);
-             eprintln!("Falling back to saving token in config file (plaintext).");
+            eprintln!("Warning: Failed to access OS keyring: {}", e);
+            eprintln!("Falling back to saving token in config file (plaintext).");
         }
     }
 
@@ -65,10 +65,10 @@ pub fn run() -> Result<()> {
 
         // Read existing config to preserve theme
         let mut file_config: FileConfig = if config_path.exists() {
-             let content = std::fs::read_to_string(&config_path)?;
-             toml::from_str(&content).unwrap_or_default()
+            let content = std::fs::read_to_string(&config_path)?;
+            toml::from_str(&content).unwrap_or_default()
         } else {
-             FileConfig::default()
+            FileConfig::default()
         };
 
         // Update fields

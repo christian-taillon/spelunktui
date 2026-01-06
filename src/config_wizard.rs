@@ -27,10 +27,10 @@ pub fn run() -> Result<()> {
     io::stdout().flush()?;
     let mut verify_ssl_str = String::new();
     io::stdin().read_line(&mut verify_ssl_str)?;
-    let verify_ssl = match verify_ssl_str.trim().to_lowercase().as_str() {
-        "n" | "no" | "false" => false,
-        _ => true,
-    };
+    let verify_ssl = !matches!(
+        verify_ssl_str.trim().to_lowercase().as_str(),
+        "n" | "no" | "false"
+    );
 
     println!();
     println!("Saving configuration...");

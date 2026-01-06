@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
+use keyring::Entry;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -18,6 +19,7 @@ impl Config {
     pub fn load() -> Result<Self> {
         let mut config = Config::default();
 
+        // 1. Load from Config File (Global)
         if let Some(proj_dirs) = ProjectDirs::from("", "", "splunk-tui") {
             let config_dir = proj_dirs.config_dir();
             let config_path = config_dir.join("config.toml");
@@ -27,15 +29,27 @@ impl Config {
                 let content = std::fs::read_to_string(&config_path)
                     .context(format!("Failed to read config file at {:?}", config_path))?;
 
-                let file_config: FileConfig =
-                    toml::from_str(&content).context("Failed to parse config.toml")?;
-
-                config.merge(file_config);
+                // Handle parsing errors gracefully
+                match toml::from_str::<FileConfig>(&content) {
+                    Ok(file_config) => config.merge(file_config),
+                    Err(e) => warn!("Failed to parse config.toml: {}", e),
+                }
             }
         }
 
-        // 2. Load from Environment Variables (System/Shell Config)
-        // Standard priority: Env vars first.
+        // 2. Load from Keyring (if token is missing)
+        if config.splunk_token.is_empty() {
+             let service = "splunk-tui";
+             let user = "token";
+             if let Ok(entry) = Entry::new(service, user) {
+                 if let Ok(password) = entry.get_password() {
+                     config.splunk_token = password;
+                 }
+             }
+        }
+
+        // 3. Load from Environment Variables (System/Shell Config)
+        // Overrides Config File & Keyring
         if let Ok(val) = env::var("SPLUNK_BASE_URL") {
             config.splunk_base_url = val;
         }
@@ -46,7 +60,7 @@ impl Config {
             config.splunk_verify_ssl = val.parse().unwrap_or(false);
         }
 
-        // 3. Load from .env file (Project Config) - FORCE OVERRIDE
+        // 4. Load from .env file (Project Config) - FORCE OVERRIDE
         // We manually read .env to ensure it overrides stale environment variables
         // which might be set in the shell (common issue).
 
@@ -91,21 +105,21 @@ impl Config {
 
     pub fn validate(&self) -> Result<()> {
         if self.splunk_base_url.is_empty() {
-            anyhow::bail!("SPLUNK_BASE_URL is missing.");
+            anyhow::bail!("SPLUNK_BASE_URL is missing. Run `splunk-tui config` to set it up.");
         }
         if self.splunk_token.is_empty() {
-            anyhow::bail!("SPLUNK_TOKEN is missing.");
+            anyhow::bail!("SPLUNK_TOKEN is missing. Run `splunk-tui config` to set it up.");
         }
         Ok(())
     }
 }
 
-#[derive(Deserialize, Serialize)]
-struct FileConfig {
-    splunk_base_url: Option<String>,
-    splunk_token: Option<String>,
-    splunk_verify_ssl: Option<bool>,
-    theme: Option<String>,
+#[derive(Deserialize, Serialize, Default)]
+pub struct FileConfig {
+    pub splunk_base_url: Option<String>,
+    pub splunk_token: Option<String>,
+    pub splunk_verify_ssl: Option<bool>,
+    pub theme: Option<String>,
 }
 
 impl Config {
@@ -133,19 +147,9 @@ impl Config {
             // Read existing or create new
             let mut file_config: FileConfig = if config_path.exists() {
                 let content = std::fs::read_to_string(&config_path)?;
-                toml::from_str(&content).unwrap_or(FileConfig {
-                    splunk_base_url: None,
-                    splunk_token: None,
-                    splunk_verify_ssl: None,
-                    theme: None,
-                })
+                toml::from_str(&content).unwrap_or_default()
             } else {
-                FileConfig {
-                    splunk_base_url: None,
-                    splunk_token: None,
-                    splunk_verify_ssl: None,
-                    theme: None,
-                }
+                FileConfig::default()
             };
 
             file_config.theme = Some(theme_name.to_string());

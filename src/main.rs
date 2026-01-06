@@ -1,14 +1,37 @@
 mod api;
 mod config;
+mod config_wizard;
 mod models;
 mod tui;
 mod utils;
 
+use clap::{Parser, Subcommand};
 use simplelog::*;
 use std::fs::File;
 
+#[derive(Parser)]
+#[command(name = "splunk-tui")]
+#[command(about = "A TUI for Splunk", long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Run the configuration wizard
+    Config,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Cli::parse();
+
+    if let Some(Commands::Config) = args.command {
+        config_wizard::run()?;
+        return Ok(());
+    }
+
     let _ = WriteLogger::init(
         LevelFilter::Info,
         simplelog::Config::default(),

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct Config {
@@ -16,6 +17,24 @@ pub struct Config {
 }
 
 impl Config {
+    fn find_project_root() -> Option<PathBuf> {
+        let mut current_path = env::current_dir().ok()?;
+
+        loop {
+            let cargo_toml = current_path.join("Cargo.toml");
+
+            if cargo_toml.exists() {
+                return Some(current_path);
+            }
+
+            if !current_path.pop() {
+                break;
+            }
+        }
+
+        None
+    }
+
     pub fn load() -> Result<Self> {
         let mut config = Config::default();
 
@@ -63,37 +82,51 @@ impl Config {
         // 4. Load from .env file (Project Config) - FORCE OVERRIDE
         // We manually read .env to ensure it overrides stale environment variables
         // which might be set in the shell (common issue).
+        // Check multiple locations:
+        //   - Project root (where Cargo.toml is)
+        //   - Global config directory (~/.config/splunk-tui/)
 
-        let dotenv_path = std::path::Path::new(".env");
-        if dotenv_path.exists() {
-            info!("Loading .env file from: {:?}", dotenv_path);
-            if let Ok(file) = File::open(dotenv_path) {
-                let reader = BufReader::new(file);
-                for l in reader.lines().map_while(Result::ok) {
-                    let l = l.trim();
-                    if l.starts_with('#') || l.is_empty() {
-                        continue;
-                    }
-                    if let Some((key, val)) = l.split_once('=') {
-                        let key = key.trim();
-                        let val = val.trim().trim_matches('"').trim_matches('\''); // Simple unquote
+        let mut dotenv_paths = Vec::new();
 
-                        match key {
-                            "SPLUNK_BASE_URL" => {
-                                if config.splunk_base_url != val {
-                                    warn!("Overriding SPLUNK_BASE_URL from .env file: '{}' (was '{}')", val, config.splunk_base_url);
-                                    config.splunk_base_url = val.to_string();
+        if let Some(root) = Self::find_project_root() {
+            dotenv_paths.push(root.join(".env"));
+        }
+
+        if let Some(proj_dirs) = ProjectDirs::from("", "", "splunk-tui") {
+            dotenv_paths.push(proj_dirs.config_dir().join(".env"));
+        }
+
+        for path in dotenv_paths {
+            if path.exists() {
+                info!("Loading .env file from: {:?}", path);
+                if let Ok(file) = File::open(&path) {
+                    let reader = BufReader::new(file);
+                    for l in reader.lines().map_while(Result::ok) {
+                        let l = l.trim();
+                        if l.starts_with('#') || l.is_empty() {
+                            continue;
+                        }
+                        if let Some((key, val)) = l.split_once('=') {
+                            let key = key.trim();
+                            let val = val.trim().trim_matches('"').trim_matches('\''); // Simple unquote
+
+                            match key {
+                                "SPLUNK_BASE_URL" => {
+                                    if config.splunk_base_url != val {
+                                        warn!("Overriding SPLUNK_BASE_URL from .env file: '{}' (was '{}')", val, config.splunk_base_url);
+                                        config.splunk_base_url = val.to_string();
+                                    }
                                 }
-                            }
-                            "SPLUNK_TOKEN" => {
-                                if !val.is_empty() {
-                                    config.splunk_token = val.to_string();
+                                "SPLUNK_TOKEN" => {
+                                    if !val.is_empty() {
+                                        config.splunk_token = val.to_string();
+                                    }
                                 }
+                                "SPLUNK_VERIFY_SSL" => {
+                                    config.splunk_verify_ssl = val.parse().unwrap_or(false);
+                                }
+                                _ => {}
                             }
-                            "SPLUNK_VERIFY_SSL" => {
-                                config.splunk_verify_ssl = val.parse().unwrap_or(false);
-                            }
-                            _ => {}
                         }
                     }
                 }

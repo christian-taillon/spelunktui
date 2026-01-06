@@ -29,10 +29,21 @@ This will compile the binary and install it into your Cargo bin directory (usual
 
 ## Configuration
 
-The application can be configured via environment variables, a `.env` file, or a `config.toml` file located in your system's config directory (e.g., `~/.config/splunk-tui/config.toml`).
+The application can be configured via the built-in wizard, environment variables, a `.env` file, or a `config.toml` file.
+
+### Interactive Configuration Wizard
+
+To easily set up your configuration, run:
+
+```bash
+splunk-tui config
+```
+
+This wizard will prompt you for your Splunk URL, Token, and SSL preferences. It attempts to store your authentication token securely in your operating system's keychain (e.g., macOS Keychain, Linux Secret Service, Windows Credential Manager).
 
 ### Environment Variables / .env
 
+Alternatively, you can manually configure the application.
 Copy the example file and fill in your details:
 ```bash
 cp .env.example .env

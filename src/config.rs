@@ -4,9 +4,6 @@ use keyring::Entry;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::env;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct Config {
@@ -17,24 +14,6 @@ pub struct Config {
 }
 
 impl Config {
-    fn find_project_root() -> Option<PathBuf> {
-        let mut current_path = env::current_dir().ok()?;
-
-        loop {
-            let cargo_toml = current_path.join("Cargo.toml");
-
-            if cargo_toml.exists() {
-                return Some(current_path);
-            }
-
-            if !current_path.pop() {
-                break;
-            }
-        }
-
-        None
-    }
-
     pub fn load() -> Result<Self> {
         let mut config = Config::default();
 
@@ -68,7 +47,7 @@ impl Config {
         }
 
         // 3. Load from Environment Variables (System/Shell Config)
-        // Overrides Config File & Keyring
+        // These override Config File & Keyring for flexibility
         if let Ok(val) = env::var("SPLUNK_BASE_URL") {
             config.splunk_base_url = val;
         }
@@ -79,69 +58,15 @@ impl Config {
             config.splunk_verify_ssl = val.parse().unwrap_or(false);
         }
 
-        // 4. Load from .env file (Project Config) - FORCE OVERRIDE
-        // We manually read .env to ensure it overrides stale environment variables
-        // which might be set in the shell (common issue).
-        // Check multiple locations:
-        //   - Project root (where Cargo.toml is)
-        //   - Global config directory (~/.config/spelunktui/)
-
-        let mut dotenv_paths = Vec::new();
-
-        if let Some(root) = Self::find_project_root() {
-            dotenv_paths.push(root.join(".env"));
-        }
-
-        if let Some(proj_dirs) = ProjectDirs::from("", "", "spelunktui") {
-            dotenv_paths.push(proj_dirs.config_dir().join(".env"));
-        }
-
-        for path in dotenv_paths {
-            if path.exists() {
-                info!("Loading .env file from: {:?}", path);
-                if let Ok(file) = File::open(&path) {
-                    let reader = BufReader::new(file);
-                    for l in reader.lines().map_while(Result::ok) {
-                        let l = l.trim();
-                        if l.starts_with('#') || l.is_empty() {
-                            continue;
-                        }
-                        if let Some((key, val)) = l.split_once('=') {
-                            let key = key.trim();
-                            let val = val.trim().trim_matches('"').trim_matches('\''); // Simple unquote
-
-                            match key {
-                                "SPLUNK_BASE_URL" => {
-                                    if config.splunk_base_url != val {
-                                        warn!("Overriding SPLUNK_BASE_URL from .env file: '{}' (was '{}')", val, config.splunk_base_url);
-                                        config.splunk_base_url = val.to_string();
-                                    }
-                                }
-                                "SPLUNK_TOKEN" => {
-                                    if !val.is_empty() {
-                                        config.splunk_token = val.to_string();
-                                    }
-                                }
-                                "SPLUNK_VERIFY_SSL" => {
-                                    config.splunk_verify_ssl = val.parse().unwrap_or(false);
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         Ok(config)
     }
 
     pub fn validate(&self) -> Result<()> {
         if self.splunk_base_url.is_empty() {
-            anyhow::bail!("SPLUNK_BASE_URL is missing. Run `spelunktui config` to set it up.");
+            anyhow::bail!("Splunk Base URL is not configured.\nRun 'spelunktui config' to set up your credentials.");
         }
         if self.splunk_token.is_empty() {
-            anyhow::bail!("SPLUNK_TOKEN is missing. Run `spelunktui config` to set it up.");
+            anyhow::bail!("Splunk Token is not configured.\nRun 'spelunktui config' to set up your credentials.");
         }
         Ok(())
     }

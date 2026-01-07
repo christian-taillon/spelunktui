@@ -29,31 +29,39 @@ This will compile the binary and install it into your Cargo bin directory (usual
 
 ## Configuration
 
-The application can be configured via the built-in wizard, environment variables, a `.env` file, or a `config.toml` file.
+The application uses a global configuration file that works from any directory. Configuration can be set via the interactive wizard or environment variables.
 
 ### Interactive Configuration Wizard
 
-To easily set up your configuration, run:
+To set up your configuration, run the wizard from anywhere:
 
 ```bash
 spelunktui config
 ```
 
-This wizard will prompt you for your Splunk URL, Token, and SSL preferences. It attempts to store your authentication token securely in your operating system's keychain (e.g., macOS Keychain, Linux Secret Service, Windows Credential Manager).
+The wizard will prompt you for:
+- **Splunk Base URL**: Your Splunk instance URL (e.g., `https://splunk.example.com:8089`)
+- **Splunk Token**: A valid Splunk Authentication Token
+- **SSL Verification**: Whether to verify SSL certificates (set to `false` if using self-signed certificates)
 
-### Environment Variables / .env
+Configuration is saved to `~/.config/spelunktui/config.toml` and will work when running `spelunktui` from any directory.
 
-Alternatively, you can manually configure the application.
-Copy the example file and fill in your details:
-```bash
-cp .env.example .env
-```
+### Environment Variables
+
+For flexibility, you can also configure the application using environment variables. These will override values from the config file.
 
 | Variable | Description |
 |----------|-------------|
 | `SPLUNK_BASE_URL` | Your Splunk instance URL (e.g., `https://splunk.example.com:8089`) |
 | `SPLUNK_TOKEN` | A valid Splunk Authentication Token |
 | `SPLUNK_VERIFY_SSL` | Set to `false` if using self-signed certificates (default: `true`) |
+
+Example:
+```bash
+export SPLUNK_BASE_URL="https://splunk.example.com:8089"
+export SPLUNK_TOKEN="your_token_here"
+export SPLUNK_VERIFY_SSL="false"
+```
 
 ## Keybindings
 

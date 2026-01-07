@@ -34,11 +34,7 @@ pub fn run() -> Result<()> {
     println!();
     println!("Saving configuration...");
 
-    // Always save token to config file (not keyring)
-    // Keyring has reliability issues on some systems
-    println!("Token will be saved to config file.");
-
-    // Save other config to toml
+    // Save to global config directory
     if let Some(proj_dirs) = ProjectDirs::from("", "", "spelunktui") {
         let config_dir = proj_dirs.config_dir();
         std::fs::create_dir_all(config_dir)?;
@@ -59,11 +55,13 @@ pub fn run() -> Result<()> {
 
         let toml_string = toml::to_string(&file_config)?;
         std::fs::write(&config_path, toml_string)?;
-        println!("Configuration saved to {:?}", config_path);
+        println!("Configuration saved to: {}", config_path.display());
+        println!();
+        println!("You can now run 'spelunktui' from any directory.");
     } else {
         anyhow::bail!("Could not determine configuration directory.");
     }
 
-    println!("Setup complete! You can now run `spelunktui`.");
+    println!("Setup complete!");
     Ok(())
 }

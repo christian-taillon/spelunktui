@@ -812,7 +812,10 @@ pub async fn run_app() -> Result<(), Box<dyn Error>> {
 async fn run_loop<B: Backend + std::io::Write>(
     terminal: &mut Terminal<B>,
     app: Arc<Mutex<App>>,
-) -> io::Result<()> {
+) -> Result<(), Box<dyn Error>>
+where
+    <B as Backend>::Error: 'static,
+{
     let tick_rate = std::time::Duration::from_millis(250);
     let mut last_tick = std::time::Instant::now();
 

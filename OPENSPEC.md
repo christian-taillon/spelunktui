@@ -1,7 +1,7 @@
-# OpenSpec: splunk-tui
+# OpenSpec: spelunktui
 
 ## Project Overview
-`splunk-tui` is a terminal user interface for the Splunk Platform. It allows users to perform searches, view job status, and manage Splunk jobs directly from the terminal.
+`spelunktui` is a terminal user interface for the Splunk Platform. It allows users to perform searches, view job status, and manage Splunk jobs directly from the terminal.
 
 ## Key Features
 - **SPL Search Editor:**
@@ -30,7 +30,7 @@
 ## Recent Changes (Feature: Search Editor Improvements)
 1.  **Saved Searches:**
     - Implemented `SavedSearchManager` in `src/utils/saved_searches.rs`.
-    - Stores searches as `.spl` files in `~/.config/splunk-tui/saved_searches` (or local fallback).
+    - Stores searches as `.spl` files in `~/.config/spelunktui/saved_searches` (or local fallback).
     - Added UI for loading (`Ctrl+s`) and saving (`Ctrl+w`).
     - Added overwrite confirmation.
 2.  **Vim Mode:**

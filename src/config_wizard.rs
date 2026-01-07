@@ -1,11 +1,10 @@
 use crate::config::FileConfig;
 use anyhow::Result;
 use directories::ProjectDirs;
-use keyring::Entry;
 use std::io::{self, Write};
 
 pub fn run() -> Result<()> {
-    println!("Welcome to splunk-tui configuration wizard!");
+    println!("Welcome to spelunktui configuration wizard!");
     println!("This wizard will help you set up your configuration.");
     println!();
 
@@ -35,30 +34,12 @@ pub fn run() -> Result<()> {
     println!();
     println!("Saving configuration...");
 
-    // Try to save token to keyring
-    let service = "splunk-tui";
-    let user = "token"; // We use a fixed username 'token' for the service
-
-    let mut token_saved_to_keyring = false;
-
-    match Entry::new(service, user) {
-        Ok(entry) => {
-            if let Err(e) = entry.set_password(&token) {
-                eprintln!("Warning: Failed to save token to OS keyring: {}", e);
-                eprintln!("Falling back to saving token in config file (plaintext).");
-            } else {
-                token_saved_to_keyring = true;
-                println!("Token saved securely to OS keyring.");
-            }
-        }
-        Err(e) => {
-            eprintln!("Warning: Failed to access OS keyring: {}", e);
-            eprintln!("Falling back to saving token in config file (plaintext).");
-        }
-    }
+    // Always save token to config file (not keyring)
+    // Keyring has reliability issues on some systems
+    println!("Token will be saved to config file.");
 
     // Save other config to toml
-    if let Some(proj_dirs) = ProjectDirs::from("", "", "splunk-tui") {
+    if let Some(proj_dirs) = ProjectDirs::from("", "", "spelunktui") {
         let config_dir = proj_dirs.config_dir();
         std::fs::create_dir_all(config_dir)?;
         let config_path = config_dir.join("config.toml");
@@ -74,13 +55,7 @@ pub fn run() -> Result<()> {
         // Update fields
         file_config.splunk_base_url = Some(base_url);
         file_config.splunk_verify_ssl = Some(verify_ssl);
-
-        if !token_saved_to_keyring {
-            file_config.splunk_token = Some(token);
-        } else {
-            // If successfully saved to keyring, remove from file if it exists to be safe
-            file_config.splunk_token = None;
-        }
+        file_config.splunk_token = Some(token);
 
         let toml_string = toml::to_string(&file_config)?;
         std::fs::write(&config_path, toml_string)?;
@@ -89,6 +64,6 @@ pub fn run() -> Result<()> {
         anyhow::bail!("Could not determine configuration directory.");
     }
 
-    println!("Setup complete! You can now run `splunk-tui`.");
+    println!("Setup complete! You can now run `spelunktui`.");
     Ok(())
 }

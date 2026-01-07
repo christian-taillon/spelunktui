@@ -1876,7 +1876,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "splunk-tui"
+name = "spelunktui"
 version = "0.1.0"
 dependencies = [
  "anyhow",

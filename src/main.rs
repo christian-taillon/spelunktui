@@ -10,7 +10,7 @@ use simplelog::*;
 use std::fs::File;
 
 #[derive(Parser)]
-#[command(name = "splunk-tui")]
+#[command(name = "spelunktui")]
 #[command(about = "A TUI for Splunk", long_about = None)]
 struct Cli {
     #[command(subcommand)]
@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = WriteLogger::init(
         LevelFilter::Info,
         simplelog::Config::default(),
-        File::create("splunk_tui.log")?,
+        File::create("spelunktui.log")?,
     );
     log::info!("Application started");
 
@@ -49,8 +49,8 @@ mod tests {
 
     #[test]
     fn test_project_name() {
-        let app_name = "splunk-tui";
-        assert_eq!(app_name, "splunk-tui", "Project name should match");
+        let app_name = "spelunktui";
+        assert_eq!(app_name, "spelunktui", "Project name should match");
     }
 
     #[test]

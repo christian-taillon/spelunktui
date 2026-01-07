@@ -1,4 +1,4 @@
-# Splunk TUI OpenSpec
+# Spelunk TUI OpenSpec
 
 ## Current Status
 - **Search Functionality:**

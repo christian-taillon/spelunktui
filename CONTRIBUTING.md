@@ -1,4 +1,4 @@
-# Contributing to Splunk TUI
+# Contributing to Spelunk TUI
 
 Thank you for your interest in contributing to Splunk TUI! We welcome contributions from everyone.
 

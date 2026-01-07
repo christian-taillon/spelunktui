@@ -39,7 +39,7 @@ impl Config {
         let mut config = Config::default();
 
         // 1. Load from Config File (Global)
-        if let Some(proj_dirs) = ProjectDirs::from("", "", "splunk-tui") {
+        if let Some(proj_dirs) = ProjectDirs::from("", "", "spelunktui") {
             let config_dir = proj_dirs.config_dir();
             let config_path = config_dir.join("config.toml");
 
@@ -58,7 +58,7 @@ impl Config {
 
         // 2. Load from Keyring (if token is missing)
         if config.splunk_token.is_empty() {
-            let service = "splunk-tui";
+            let service = "spelunktui";
             let user = "token";
             if let Ok(entry) = Entry::new(service, user) {
                 if let Ok(password) = entry.get_password() {
@@ -84,7 +84,7 @@ impl Config {
         // which might be set in the shell (common issue).
         // Check multiple locations:
         //   - Project root (where Cargo.toml is)
-        //   - Global config directory (~/.config/splunk-tui/)
+        //   - Global config directory (~/.config/spelunktui/)
 
         let mut dotenv_paths = Vec::new();
 
@@ -92,7 +92,7 @@ impl Config {
             dotenv_paths.push(root.join(".env"));
         }
 
-        if let Some(proj_dirs) = ProjectDirs::from("", "", "splunk-tui") {
+        if let Some(proj_dirs) = ProjectDirs::from("", "", "spelunktui") {
             dotenv_paths.push(proj_dirs.config_dir().join(".env"));
         }
 
@@ -138,10 +138,10 @@ impl Config {
 
     pub fn validate(&self) -> Result<()> {
         if self.splunk_base_url.is_empty() {
-            anyhow::bail!("SPLUNK_BASE_URL is missing. Run `splunk-tui config` to set it up.");
+            anyhow::bail!("SPLUNK_BASE_URL is missing. Run `spelunktui config` to set it up.");
         }
         if self.splunk_token.is_empty() {
-            anyhow::bail!("SPLUNK_TOKEN is missing. Run `splunk-tui config` to set it up.");
+            anyhow::bail!("SPLUNK_TOKEN is missing. Run `spelunktui config` to set it up.");
         }
         Ok(())
     }
@@ -172,7 +172,7 @@ impl Config {
     }
 
     pub fn save_theme(theme_name: &str) -> Result<()> {
-        if let Some(proj_dirs) = ProjectDirs::from("", "", "splunk-tui") {
+        if let Some(proj_dirs) = ProjectDirs::from("", "", "spelunktui") {
             let config_dir = proj_dirs.config_dir();
             std::fs::create_dir_all(config_dir)?;
             let config_path = config_dir.join("config.toml");

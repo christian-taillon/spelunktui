@@ -25,7 +25,7 @@ cd spelunktui
 cargo install --path .
 ```
 
-This will compile the binary and install it into your Cargo bin directory (usually `~/.cargo/bin`), which is typically in your system's `$PATH`. You can then run the app by simply typing `splunk-tui` in your terminal.
+This will compile the binary and install it into your Cargo bin directory (usually `~/.cargo/bin`), which is typically in your system's `$PATH`. You can then run the app by simply typing `spelunktui` in your terminal.
 
 ## Configuration
 
@@ -36,7 +36,7 @@ The application can be configured via the built-in wizard, environment variables
 To easily set up your configuration, run:
 
 ```bash
-splunk-tui config
+spelunktui config
 ```
 
 This wizard will prompt you for your Splunk URL, Token, and SSL preferences. It attempts to store your authentication token securely in your operating system's keychain (e.g., macOS Keychain, Linux Secret Service, Windows Credential Manager).

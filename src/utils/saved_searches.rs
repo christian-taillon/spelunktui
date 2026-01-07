@@ -9,8 +9,8 @@ pub struct SavedSearchManager;
 impl SavedSearchManager {
     #[cfg(not(test))]
     fn get_storage_dir() -> PathBuf {
-        // Try ~/.config/splunk-tui/saved_searches using directories crate
-        if let Some(proj_dirs) = ProjectDirs::from("", "", "splunk-tui") {
+        // Try ~/.config/spelunktui/saved_searches using directories crate
+        if let Some(proj_dirs) = ProjectDirs::from("", "", "spelunktui") {
             let mut path = proj_dirs.config_dir().to_path_buf();
             path.push("saved_searches");
             if fs::create_dir_all(&path).is_ok() {
@@ -27,7 +27,7 @@ impl SavedSearchManager {
     #[cfg(test)]
     fn get_storage_dir() -> PathBuf {
         let mut path = std::env::temp_dir();
-        path.push("splunk-tui-tests");
+        path.push("spelunktui-tests");
         path.push("saved_searches");
         let _ = fs::create_dir_all(&path);
         path

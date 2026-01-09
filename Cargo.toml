@@ -16,7 +16,6 @@ regex = "1.10"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1.0"
-dotenv = "0.15"
 log = "0.4"
 env_logger = "0.11"
 url = "2.5"
